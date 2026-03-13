@@ -68,6 +68,13 @@ Note: `npm install` runs `electron-builder install-app-deps` to rebuild native m
 brew install --cask zoltanf/mboxviewer/mbox-viewer
 ```
 
+If macOS blocks the app on first launch because it is not notarized, open:
+
+- `System Settings`
+- `Privacy & Security`
+
+Then scroll to the bottom and click `Open Anyway` for `Mbox Viewer.app`.
+
 ## Build / Package
 
 Build outputs go to `dist/`.
