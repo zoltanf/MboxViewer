@@ -36,28 +36,31 @@ function resolveDatabaseClass() {
   throw new Error("Unsupported SQLite runtime.");
 }
 
-async function ensureMboxDatabase(filePath, sender) {
-  const sourceStats = await stat(filePath);
-  const dbPath = `${filePath}.sqlite`;
-  const sourceMtimeMs = Math.trunc(sourceStats.mtimeMs);
+async function ensureMboxDatabase(filePath, sender, options = {}) {
+  const indexSourceStats = await stat(filePath);
+  const dbPath = typeof options?.dbPath === "string" && options.dbPath ? options.dbPath : `${filePath}.sqlite`;
+  const metaSourcePath = typeof options?.sourcePath === "string" && options.sourcePath ? options.sourcePath : filePath;
+  const persistSourceChunks = Boolean(options?.persistSourceChunks);
+  const metaSourceStats = metaSourcePath === filePath ? indexSourceStats : await stat(metaSourcePath);
+  const sourceMtimeMs = Math.trunc(metaSourceStats.mtimeMs);
 
   emitProgress(sender, {
     phase: "preparing",
     filePath,
     dbPath,
-    totalBytes: sourceStats.size,
+    totalBytes: indexSourceStats.size,
     bytesRead: 0,
     messagesIndexed: 0
   });
 
-  if (await isReusableDatabase(dbPath, filePath, sourceStats.size, sourceMtimeMs)) {
+  if (await isReusableDatabase(dbPath, metaSourcePath, metaSourceStats.size, sourceMtimeMs)) {
     const totalMessages = countMessages(dbPath);
     emitProgress(sender, {
       phase: "ready",
       filePath,
       dbPath,
-      totalBytes: sourceStats.size,
-      bytesRead: sourceStats.size,
+      totalBytes: indexSourceStats.size,
+      bytesRead: indexSourceStats.size,
       messagesIndexed: totalMessages,
       reused: true
     });
@@ -104,6 +107,14 @@ async function ensureMboxDatabase(filePath, sender) {
       attachment_names
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertMessageSource = persistSourceChunks
+    ? db.prepare(`
+        INSERT INTO message_source (
+          message_id,
+          raw_chunk
+        ) VALUES (?, ?)
+      `)
+    : null;
 
   let messagesIndexed = 0;
   let bytesRead = 0;
@@ -186,6 +197,10 @@ async function ensureMboxDatabase(filePath, sender) {
           attachmentNames
         );
 
+        if (insertMessageSource) {
+          insertMessageSource.run(messagesIndexed, rawChunk);
+        }
+
         for (const attachment of parsed.attachments || []) {
           insertAttachment.run(
             messagesIndexed,
@@ -213,7 +228,7 @@ async function ensureMboxDatabase(filePath, sender) {
             phase: "indexing",
             filePath,
             dbPath,
-            totalBytes: sourceStats.size,
+            totalBytes: indexSourceStats.size,
             bytesRead,
             messagesIndexed
           });
@@ -225,7 +240,9 @@ async function ensureMboxDatabase(filePath, sender) {
     commitBatch();
     db.exec("ANALYZE");
     db.exec("INSERT INTO message_fts(message_fts) VALUES ('optimize')");
-    writeMeta(db, filePath, sourceStats.size, sourceMtimeMs, messagesIndexed);
+    writeMeta(db, metaSourcePath, metaSourceStats.size, sourceMtimeMs, messagesIndexed, {
+      sourceEmbedded: persistSourceChunks
+    });
   } catch (error) {
     if (transactionOpen) {
       try {
@@ -243,8 +260,8 @@ async function ensureMboxDatabase(filePath, sender) {
     phase: "ready",
     filePath,
     dbPath,
-    totalBytes: sourceStats.size,
-    bytesRead: sourceStats.size,
+    totalBytes: indexSourceStats.size,
+    bytesRead: indexSourceStats.size,
     messagesIndexed,
     reused: false
   });
@@ -324,12 +341,19 @@ async function loadMessageById(dbPath, messageId) {
     return null;
   }
 
-  const sourcePath = entry.getMeta.get("source_path")?.value;
-  if (!sourcePath) {
-    throw new Error("Indexed database is missing source file metadata.");
+  let rawChunk = "";
+  if (entry.getEmbeddedMessageSource) {
+    rawChunk = entry.getEmbeddedMessageSource.get(id)?.raw_chunk || "";
   }
 
-  const rawChunk = await readUtf8Range(sourcePath, row.byte_start, row.byte_end);
+  if (!rawChunk) {
+    const sourcePath = entry.getMeta.get("source_path")?.value;
+    if (!sourcePath) {
+      throw new Error("Indexed database is missing source file metadata.");
+    }
+    rawChunk = await readUtf8Range(sourcePath, row.byte_start, row.byte_end);
+  }
+
   const parsed = parseMessageChunk(rawChunk, {
     index: row.id,
     includeAttachmentData: true,
@@ -500,6 +524,28 @@ async function isReusableDatabase(dbPath, sourcePath, sourceSize, sourceMtimeMs)
   }
 }
 
+async function getReusableDatabaseInfo(dbPath, sourcePath) {
+  try {
+    const sourceStats = await stat(sourcePath);
+    const sourceMtimeMs = Math.trunc(sourceStats.mtimeMs);
+    const reusable = await isReusableDatabase(dbPath, sourcePath, sourceStats.size, sourceMtimeMs);
+    if (!reusable) {
+      return null;
+    }
+
+    const entry = getDatabaseEntry(dbPath);
+    return {
+      dbPath,
+      totalMessages: countMessages(dbPath),
+      sourceSize: sourceStats.size,
+      sourceMtimeMs,
+      sourceEmbedded: entry.getMeta.get("source_embedded")?.value === "1"
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function removeDbFiles(dbPath) {
   const files = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
   for (const filePath of files) {
@@ -549,6 +595,11 @@ function createWritableDatabase(dbPath) {
       content_id TEXT NOT NULL DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS message_source (
+      message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      raw_chunk TEXT NOT NULL
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
       subject,
       sender,
@@ -563,12 +614,13 @@ function createWritableDatabase(dbPath) {
   `);
   db.exec("DELETE FROM meta");
   db.exec("DELETE FROM attachments");
+  db.exec("DELETE FROM message_source");
   db.exec("DELETE FROM messages");
   db.exec("DELETE FROM message_fts");
   return db;
 }
 
-function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages) {
+function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages, options = {}) {
   const upsert = db.prepare(`
     INSERT INTO meta (key, value)
     VALUES (?, ?)
@@ -579,6 +631,7 @@ function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages) {
   upsert.run("source_path", sourcePath);
   upsert.run("source_size", String(sourceSize));
   upsert.run("source_mtime_ms", String(sourceMtimeMs));
+  upsert.run("source_embedded", options.sourceEmbedded ? "1" : "0");
   upsert.run("total_messages", String(totalMessages));
   upsert.run("indexed_at", new Date().toISOString());
 }
@@ -591,6 +644,7 @@ function getDatabaseEntry(dbPath) {
 
   const db = new DatabaseClass(dbPath);
   db.exec("PRAGMA foreign_keys=ON");
+  const hasEmbeddedMessageSourceTable = tableExists(db, "message_source");
   const entry = {
     db,
     countAll: db.prepare("SELECT COUNT(*) AS count FROM messages"),
@@ -664,6 +718,13 @@ function getDatabaseEntry(dbPath) {
       FROM messages
       WHERE id = ?
     `),
+    getEmbeddedMessageSource: hasEmbeddedMessageSourceTable
+      ? db.prepare(`
+          SELECT raw_chunk
+          FROM message_source
+          WHERE message_id = ?
+        `)
+      : null,
     getMeta: db.prepare("SELECT value FROM meta WHERE key = ?"),
     getDateBounds: db.prepare(`
       SELECT
@@ -676,6 +737,13 @@ function getDatabaseEntry(dbPath) {
   };
   DB_CACHE.set(dbPath, entry);
   return entry;
+}
+
+function tableExists(db, tableName) {
+  const row = db
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+    .get(tableName);
+  return Boolean(row?.present);
 }
 
 function closeDatabase(dbPath) {
@@ -925,6 +993,7 @@ async function fileExistsAtPath(filePath) {
 
 module.exports = {
   ensureMboxDatabase,
+  getReusableDatabaseInfo,
   searchMessages,
   loadMessageById,
   getMessageDateBounds,

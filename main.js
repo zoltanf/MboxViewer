@@ -1,9 +1,15 @@
 const path = require("path");
 const os = require("os");
-const { mkdtemp, readFile, rm, writeFile } = require("fs/promises");
+const { mkdtemp, readFile, rm, stat, writeFile } = require("fs/promises");
 const { pathToFileURL } = require("url");
 const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } = require("electron");
-const { ensureMboxDatabase, searchMessages, loadMessageById, getMessageDateBounds } = require("./src/mboxStore");
+const {
+  ensureMboxDatabase,
+  getReusableDatabaseInfo,
+  searchMessages,
+  loadMessageById,
+  getMessageDateBounds
+} = require("./src/mboxStore");
 const { isPstFilePath, ensurePstConvertedToMbox } = require("./src/pstConverter");
 
 const DEFAULT_PAGE_SIZE = 200;
@@ -105,6 +111,7 @@ async function openMailboxFile(filePath, sender) {
   const openedAsPst = isPstFilePath(filePathToOpen);
   let sourcePath = filePathToOpen;
   let pstConversion = null;
+  const sourceStats = await stat(filePathToOpen);
 
   emitOpenProgress(sender, {
     phase: "preparing",
@@ -113,6 +120,47 @@ async function openMailboxFile(filePath, sender) {
     bytesRead: 0,
     messagesIndexed: 0
   });
+
+  if (openedAsPst) {
+    const pstDbPath = `${filePathToOpen}.sqlite`;
+    const reusableDatabase = await getReusableDatabaseInfo(pstDbPath, filePathToOpen);
+    if (reusableDatabase?.sourceEmbedded) {
+      await cleanupPstSidecarArtifacts(filePathToOpen);
+      emitOpenProgress(sender, {
+        phase: "ready",
+        filePath: filePathToOpen,
+        dbPath: reusableDatabase.dbPath,
+        totalBytes: sourceStats.size,
+        bytesRead: sourceStats.size,
+        messagesIndexed: reusableDatabase.totalMessages,
+        reused: true
+      });
+
+      const firstPage = searchMessages(reusableDatabase.dbPath, "", DEFAULT_PAGE_SIZE, 0);
+      const dateBounds = getMessageDateBounds(reusableDatabase.dbPath);
+
+      return {
+        canceled: false,
+        filePath: filePathToOpen,
+        sourcePath: filePathToOpen,
+        sourceType: "pst",
+        pstConversion: null,
+        dbPath: reusableDatabase.dbPath,
+        total: reusableDatabase.totalMessages,
+        messages: firstPage.messages,
+        offset: firstPage.offset,
+        limit: firstPage.limit,
+        resultTotal: firstPage.total,
+        dateRange: dateBounds
+          ? {
+              from: dateBounds.minDateTs,
+              to: dateBounds.maxDateTs,
+              count: dateBounds.datedCount
+            }
+          : null
+      };
+    }
+  }
 
   if (openedAsPst) {
     pstConversion = await ensurePstConvertedToMbox(filePathToOpen, {
@@ -126,14 +174,25 @@ async function openMailboxFile(filePath, sender) {
     sourcePath = pstConversion.mboxPath;
   }
 
-  const indexing = await ensureMboxDatabase(sourcePath, sender);
+  const indexing = await ensureMboxDatabase(sourcePath, sender, openedAsPst
+    ? {
+        dbPath: `${filePathToOpen}.sqlite`,
+        sourcePath: filePathToOpen,
+        persistSourceChunks: true
+      }
+    : undefined);
+
+  if (openedAsPst) {
+    await cleanupPstSidecarArtifacts(filePathToOpen);
+  }
+
   const firstPage = searchMessages(indexing.dbPath, "", DEFAULT_PAGE_SIZE, 0);
   const dateBounds = getMessageDateBounds(indexing.dbPath);
 
   return {
     canceled: false,
     filePath: filePathToOpen,
-    sourcePath,
+    sourcePath: filePathToOpen,
     sourceType: openedAsPst ? "pst" : "mbox",
     pstConversion,
     dbPath: indexing.dbPath,
@@ -530,6 +589,23 @@ function emitOpenProgress(sender, payload) {
     return;
   }
   sender.send(OPEN_PROGRESS_EVENT, payload);
+}
+
+async function cleanupPstSidecarArtifacts(pstPath) {
+  const mboxPath = `${pstPath}.mbox`;
+  const metaPath = `${mboxPath}.meta.json`;
+
+  await Promise.all(
+    [mboxPath, metaPath].map(async (filePath) => {
+      try {
+        await rm(filePath);
+      } catch (error) {
+        if (error && error.code !== "ENOENT") {
+          console.error(`Failed to remove PST sidecar artifact: ${filePath}`, error);
+        }
+      }
+    })
+  );
 }
 
 function normalizeMailboxFilePath(filePath) {
