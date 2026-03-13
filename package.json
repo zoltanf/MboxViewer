@@ -49,6 +49,12 @@
         "name": "Outlook PST Archive",
         "description": "Microsoft Outlook personal storage archive",
         "role": "Viewer"
+      },
+      {
+        "ext": "eml",
+        "name": "EML Message File",
+        "description": "Single email message in EML format",
+        "role": "Viewer"
       }
     ],
     "files": [

@@ -10,6 +10,7 @@ const {
   loadMessageById,
   getMessageDateBounds
 } = require("./src/mboxStore");
+const { parseMessageChunk } = require("./src/mboxParser");
 const { isPstFilePath, ensurePstConvertedToMbox } = require("./src/pstConverter");
 
 const DEFAULT_PAGE_SIZE = 200;
@@ -66,12 +67,13 @@ function createWindow() {
 
 ipcMain.handle("open-mbox", async (event) => {
   const result = await dialog.showOpenDialog({
-    title: "Open mailbox file",
+    title: "Open email or mailbox file",
     properties: ["openFile"],
     filters: [
-      { name: "Mailbox Files", extensions: ["mbox", "pst"] },
+      { name: "Email Files", extensions: ["mbox", "pst", "eml"] },
       { name: "Mbox Files", extensions: ["mbox"] },
       { name: "Outlook PST Files", extensions: ["pst"] },
+      { name: "EML Files", extensions: ["eml"] },
       { name: "All Files", extensions: ["*"] }
     ]
   });
@@ -109,8 +111,14 @@ async function openMailboxFile(filePath, sender) {
 
   const filePathToOpen = normalizedFilePath;
   const openedAsPst = isPstFilePath(filePathToOpen);
+  const openedAsEml = isEmlFilePath(filePathToOpen);
   let sourcePath = filePathToOpen;
   let pstConversion = null;
+
+  if (openedAsEml) {
+    return openEmlFile(filePathToOpen);
+  }
+
   const sourceStats = await stat(filePathToOpen);
 
   emitOpenProgress(sender, {
@@ -615,11 +623,64 @@ function normalizeMailboxFilePath(filePath) {
   }
 
   const extension = path.extname(value).toLowerCase();
-  if (extension !== ".mbox" && extension !== ".pst") {
+  if (extension !== ".mbox" && extension !== ".pst" && extension !== ".eml") {
     return "";
   }
 
   return path.resolve(value);
+}
+
+function isEmlFilePath(filePath) {
+  return String(filePath || "").toLowerCase().endsWith(".eml");
+}
+
+async function openEmlFile(filePath) {
+  const raw = await readFile(filePath, "utf8");
+  const parsed = parseMessageChunk(raw, {
+    index: 1,
+    includeAttachmentData: true,
+    includeEmlSource: true,
+    includeBodyHtml: true
+  });
+
+  if (!parsed) {
+    return {
+      canceled: true,
+      error: "The EML file could not be parsed."
+    };
+  }
+
+  const message = {
+    ...parsed,
+    id: parsed.id || "eml-1",
+    resultIndex: 1
+  };
+
+  return {
+    canceled: false,
+    filePath,
+    sourcePath: filePath,
+    sourceType: "eml",
+    dbPath: "",
+    total: 1,
+    messages: [
+      {
+        id: message.id,
+        subject: message.subject || "(No Subject)",
+        from: message.from || "",
+        to: message.to || "",
+        date: message.date || "",
+        snippet: message.snippet || "",
+        hasAttachments: Array.isArray(message.attachments) && message.attachments.length > 0,
+        resultIndex: 1
+      }
+    ],
+    offset: 0,
+    limit: 1,
+    resultTotal: 1,
+    dateRange: null,
+    standaloneMessage: message
+  };
 }
 
 function findMailboxFilePathInArgv(argvValues) {
@@ -705,8 +766,6 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") {
-      app.quit();
-    }
+    app.quit();
   });
 }

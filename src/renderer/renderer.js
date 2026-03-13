@@ -61,6 +61,7 @@ let currentQuery = "";
 let currentOffset = 0;
 let selectedMessageId = null;
 let currentPageMessages = [];
+let currentStandaloneMessage = null;
 let resultIndexById = new Map();
 let searchDebounceTimer = null;
 let requestToken = 0;
@@ -184,6 +185,7 @@ updateRemoteContentButtonState();
 updateSearchUiState();
 setSearchVisible(false);
 setTextFiltersVisible(false);
+setRemoteContentVisible(false);
 void consumePendingMailboxOpen();
 
 async function openMbox() {
@@ -221,7 +223,7 @@ async function openMailboxRequest(loader) {
   openingInProgress = true;
   setOpenButtonBusy(true);
   setOpenProgress({ visible: true, indeterminate: true, value: 8 });
-  setStatusMessage("Opening mailbox file...");
+  setStatusMessage("Opening file...");
 
   try {
     const result = await loader();
@@ -234,8 +236,10 @@ async function openMailboxRequest(loader) {
     dbPath = result.dbPath || "";
     mboxPath = result.filePath || "";
     totalMessages = Number.isInteger(result.total) ? result.total : 0;
+    currentStandaloneMessage = result?.standaloneMessage || null;
     setSearchVisible(Boolean(dbPath));
     setTextFiltersVisible(Boolean(dbPath));
+    setRemoteContentVisible(Boolean(dbPath || currentStandaloneMessage));
     currentQuery = "";
     searchInput.value = "";
     resetTextFilters();
@@ -247,7 +251,7 @@ async function openMailboxRequest(loader) {
     applyPageResult(result);
     setOpenProgress({ visible: true, indeterminate: false, value: 100 });
     await loadSelectedMessage();
-    setStatusMessage(`Loaded ${totalMessages} emails from ${mboxPath}`);
+    setStatusMessage(`Loaded ${totalMessages} email${totalMessages === 1 ? "" : "s"} from ${mboxPath}`);
   } catch (error) {
     setStatusMessage("Failed to open file.");
     setOpenProgress({ visible: false });
@@ -256,12 +260,14 @@ async function openMailboxRequest(loader) {
     openingInProgress = false;
     setOpenButtonBusy(false);
     refreshStatusMeta();
-    if (dbPath) {
+    if (dbPath || currentStandaloneMessage) {
       setTimeout(() => {
         if (!openingInProgress) {
           setOpenProgress({ visible: false });
         }
       }, 220);
+    } else {
+      setOpenProgress({ visible: false });
     }
   }
 }
@@ -301,6 +307,13 @@ function setSearchVisible(visible) {
     return;
   }
   searchWrap.hidden = !visible;
+}
+
+function setRemoteContentVisible(visible) {
+  if (!remoteContentButton) {
+    return;
+  }
+  remoteContentButton.hidden = !visible;
 }
 
 function toggleRemoteContent() {
@@ -1076,7 +1089,17 @@ async function loadMoreMessages(options = {}) {
 async function loadSelectedMessage(expectedPageToken = requestToken) {
   const currentMessageToken = ++messageRequestToken;
 
-  if (!selectedMessageId || !dbPath) {
+  if (!selectedMessageId) {
+    renderMessage(null);
+    return;
+  }
+
+  if (!dbPath) {
+    if (currentStandaloneMessage && currentStandaloneMessage.id === selectedMessageId) {
+      currentStandaloneMessage.resultIndex = resultIndexById.get(selectedMessageId) || 1;
+      renderMessage(currentStandaloneMessage);
+      return;
+    }
     renderMessage(null);
     return;
   }
@@ -1116,10 +1139,10 @@ async function loadSelectedMessage(expectedPageToken = requestToken) {
 function renderList() {
   mailList.innerHTML = "";
 
-  if (!dbPath) {
+  if (!dbPath && currentPageMessages.length === 0) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = "Open an mbox file to start browsing messages.";
+    empty.textContent = "Open an mbox, pst, or eml file to start browsing messages.";
     mailList.appendChild(empty);
     return;
   }
@@ -1666,9 +1689,6 @@ function getTextFilterConfig(filterKey) {
 }
 
 function setTextFiltersVisible(visible) {
-  if (remoteContentButton) {
-    remoteContentButton.hidden = !visible;
-  }
   if (filterToolsIcon) {
     filterToolsIcon.hidden = !visible;
   }
@@ -2281,7 +2301,14 @@ function refreshStatusMeta() {
   }
 
   if (!dbPath) {
-    statusMeta.textContent = "0 emails";
+    if (!currentPageMessages.length) {
+      statusMeta.textContent = "0 emails";
+      return;
+    }
+
+    const position = resultIndexById.get(selectedMessageId) || (selectedMessageId ? 1 : 0);
+    const positionText = position > 0 ? position : "-";
+    statusMeta.textContent = `Position ${positionText} / ${totalResults || currentPageMessages.length} (${totalMessages} total messages)`;
     return;
   }
 

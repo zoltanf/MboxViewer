@@ -1,12 +1,12 @@
 # Mbox Viewer
 
-Mbox Viewer is a desktop app for browsing large `.mbox` and Outlook `.pst` email archives without importing them into a mail client.
+Mbox Viewer is a desktop app for browsing `.mbox`, `.eml`, and Outlook `.pst` email files without importing them into a mail client.
 
 It is built with Electron and designed for fast local exploration of mailbox dumps, backups, and exports.
 
 ## What This App Does
 
-- Opens a single `.mbox` or `.pst` file from your computer
+- Opens a single `.mbox`, `.eml`, or `.pst` file from your computer
 - Builds a local SQLite sidecar index (`<your-file>.mbox.sqlite`) for fast search and navigation
 - Shows messages in a two-pane UI:
   - left: sender, subject, date, preview
@@ -25,6 +25,7 @@ Everything runs locally on your machine.
 - Inline CID image resolution for HTML emails
 - Remote-content blocking toggle for HTML email, disabled by default for privacy
 - Downloadable attachments
+- Direct viewing of standalone `.eml` message files without creating a SQLite index
 - Export selected message as `.eml`
 - PST support via local conversion to a cached sidecar mbox (`<file>.pst.mbox`) before indexing, including message attachments
 
@@ -80,9 +81,9 @@ If macOS blocks the app on first launch because it is not notarized, open:
 
 Then scroll to the bottom and click `Open Anyway` for `Mbox Viewer.app`.
 
-### Open `.mbox` and `.pst` files directly from Finder or Explorer
+### Open `.mbox`, `.eml`, and `.pst` files directly from Finder or Explorer
 
-Packaged builds register Mbox Viewer as a viewer for `.mbox` and `.pst` files, so you can open mailbox files by double-clicking them.
+Packaged builds register Mbox Viewer as a viewer for `.mbox`, `.eml`, and `.pst` files, so you can open email files by double-clicking them.
 
 Notes:
 
@@ -92,7 +93,7 @@ Notes:
 On macOS:
 
 - move `Mbox Viewer.app` to `/Applications`
-- select an `.mbox` or `.pst` file in Finder
+- select an `.mbox`, `.eml`, or `.pst` file in Finder
 - press `Cmd+I`
 - under `Open with`, choose `Mbox Viewer`
 - click `Change All...` if you want to use it for all files of that type
@@ -100,7 +101,7 @@ On macOS:
 On Windows:
 
 - install the packaged app
-- right-click an `.mbox` or `.pst` file
+- right-click an `.mbox`, `.eml`, or `.pst` file
 - choose `Open with`
 - choose `Mbox Viewer`
 - enable `Always use this app` if you want it as the default
