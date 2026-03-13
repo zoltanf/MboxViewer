@@ -23,6 +23,7 @@ Everything runs locally on your machine.
 - Date range filtering with a dual-handle slider (in a filter popover)
 - Pagination for large result sets
 - Inline CID image resolution for HTML emails
+- Remote-content blocking toggle for HTML email, disabled by default for privacy
 - Downloadable attachments
 - Export selected message as `.eml`
 - PST support via local conversion to a cached sidecar mbox (`<file>.pst.mbox`) before indexing, including message attachments
@@ -31,9 +32,13 @@ Everything runs locally on your machine.
 
 - Email HTML is sanitized before rendering
 - Potentially unsafe schemes are stripped from email content (`javascript:`, etc.)
+- Remote images and other remote HTML content can be blocked before rendering
+  - the remote-content toolbar toggle is hidden until a mailbox is open
+  - remote content is blocked by default
+  - when content is blocked, the message view shows a privacy notice
 - Clicking a link in an email shows a confirmation dialog before opening externally
   - full URL is shown
-  - domain is highlighted for easier visual verification
+  - the registrable domain is highlighted for easier visual verification
 - External links open in the system default browser only after confirmation
 
 ## Why SQLite Sidecar Indexing?
