@@ -1,4 +1,5 @@
 const openButton = document.getElementById("openButton");
+const remoteContentButton = document.getElementById("remoteContentButton");
 const searchInput = document.getElementById("searchInput");
 const searchWrap = document.getElementById("searchWrap");
 const searchClearButton = document.getElementById("searchClearButton");
@@ -75,11 +76,15 @@ let fromFilterPopoverOpen = false;
 let toFilterPopoverOpen = false;
 let subjectFilterPopoverOpen = false;
 let attachmentsOnlyFilterEnabled = false;
+let remoteContentEnabled = false;
 let externalLinkModalOpen = false;
 let emlSourceModalOpen = false;
 let pendingExternalUrl = "";
 
 openButton.addEventListener("click", openMbox);
+if (remoteContentButton) {
+  remoteContentButton.addEventListener("click", toggleRemoteContent);
+}
 searchInput.addEventListener("input", onSearchInput);
 if (searchClearButton) {
   searchClearButton.addEventListener("click", onSearchClearClick);
@@ -165,6 +170,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 initSplitter();
+updateRemoteContentButtonState();
 updateSearchUiState();
 setSearchVisible(false);
 setTextFiltersVisible(false);
@@ -259,6 +265,33 @@ function setSearchVisible(visible) {
     return;
   }
   searchWrap.hidden = !visible;
+}
+
+function toggleRemoteContent() {
+  remoteContentEnabled = !remoteContentEnabled;
+  updateRemoteContentButtonState();
+  setStatusMessage(
+    remoteContentEnabled
+      ? "Remote content is enabled for HTML messages."
+      : "Remote content is blocked for HTML messages."
+  );
+  if (selectedMessageId) {
+    void loadSelectedMessage();
+  }
+}
+
+function updateRemoteContentButtonState() {
+  if (!remoteContentButton) {
+    return;
+  }
+
+  remoteContentButton.classList.toggle("active", remoteContentEnabled);
+  remoteContentButton.setAttribute("aria-pressed", remoteContentEnabled ? "true" : "false");
+  remoteContentButton.setAttribute(
+    "aria-label",
+    remoteContentEnabled ? "Remote content enabled" : "Remote content blocked"
+  );
+  remoteContentButton.title = remoteContentEnabled ? "Remote content enabled" : "Remote content blocked";
 }
 
 function onDateFilterButtonClick() {
@@ -731,13 +764,15 @@ function splitUrlForDomainHighlight(urlValue) {
         domainStart += authEnd + 1;
       }
 
-      const domain = parsed.host || parsed.hostname || "";
-      const domainIndex = domain ? full.indexOf(domain, domainStart) : -1;
-      if (domainIndex !== -1) {
+      const hostName = parsed.hostname || "";
+      const highlightedDomain = getRegistrableDomain(hostName);
+      const hostIndex = hostName ? full.indexOf(hostName, domainStart) : -1;
+      if (hostIndex !== -1 && highlightedDomain) {
+        const domainIndex = hostIndex + Math.max(0, hostName.length - highlightedDomain.length);
         return {
           before: full.slice(0, domainIndex),
-          domain,
-          after: full.slice(domainIndex + domain.length)
+          domain: highlightedDomain,
+          after: full.slice(domainIndex + highlightedDomain.length)
         };
       }
     }
@@ -749,10 +784,13 @@ function splitUrlForDomainHighlight(urlValue) {
       if (atIndex !== -1 && atIndex + 1 < body.length) {
         const domainStart = atIndex + 1;
         const domainEnd = body.length;
+        const mailDomain = full.slice(domainStart, domainEnd);
+        const highlightedDomain = getRegistrableDomain(mailDomain);
+        const highlightStart = domainStart + Math.max(0, mailDomain.length - highlightedDomain.length);
         return {
-          before: full.slice(0, domainStart),
-          domain: full.slice(domainStart, domainEnd),
-          after: full.slice(domainEnd)
+          before: full.slice(0, highlightStart),
+          domain: highlightedDomain,
+          after: full.slice(highlightStart + highlightedDomain.length)
         };
       }
     }
@@ -761,6 +799,48 @@ function splitUrlForDomainHighlight(urlValue) {
   }
 
   return { before: "", domain: full, after: "" };
+}
+
+function getRegistrableDomain(hostValue) {
+  const host = String(hostValue || "").trim().toLowerCase().replace(/\.+$/, "");
+  if (!host || !host.includes(".") || host.includes(":")) {
+    return host;
+  }
+
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length <= 2) {
+    return host;
+  }
+
+  const commonSecondLevelSuffixes = new Set([
+    "ac.uk",
+    "co.jp",
+    "co.kr",
+    "co.nz",
+    "co.uk",
+    "com.au",
+    "com.br",
+    "com.cn",
+    "com.hk",
+    "com.mx",
+    "com.sg",
+    "com.tr",
+    "edu.au",
+    "gov.uk",
+    "net.au",
+    "org.au",
+    "org.uk"
+  ]);
+  const trailingPair = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (commonSecondLevelSuffixes.has(trailingPair) && parts.length >= 3) {
+    return parts.slice(-3).join(".");
+  }
+
+  if (parts[parts.length - 1].length === 2 && parts[parts.length - 2].length <= 3 && parts.length >= 3) {
+    return parts.slice(-3).join(".");
+  }
+
+  return parts.slice(-2).join(".");
 }
 
 function onDateRangeInput(event) {
@@ -1069,6 +1149,15 @@ function renderMessage(msg) {
   }
 
   const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+  const bodyHtml = resolveCidUrls(msg.bodyHtml || "", attachments);
+  const sanitizedBody = sanitizeEmailHtml(bodyHtml, { allowRemoteContent: remoteContentEnabled });
+  const remoteContentWarningMarkup = sanitizedBody.blockedRemoteContent
+    ? `
+      <div class="message-privacy-banner" data-role="remote-content-warning">
+        To protect your privacy, remote content was blocked in this message.
+      </div>
+    `
+    : "";
   const attachmentsMarkup = attachments.length
     ? `
       <section class="attachments">
@@ -1130,6 +1219,7 @@ function renderMessage(msg) {
     </section>
     ${attachmentsMarkup}
     <section class="message-body">
+      ${remoteContentWarningMarkup}
       <iframe
         id="messageFrame"
         class="message-frame"
@@ -1209,13 +1299,11 @@ function renderMessage(msg) {
   }
 
   const frame = document.getElementById("messageFrame");
-  const bodyHtml = resolveCidUrls(msg.bodyHtml || "", attachments);
-  const safeHtml = sanitizeEmailHtml(bodyHtml);
   frame.addEventListener("load", () => {
     bindExternalLinksInFrame(frame);
     fitMessageFrameToContent(frame);
   });
-  frame.srcdoc = buildFrameDocument(safeHtml);
+  frame.srcdoc = buildFrameDocument(sanitizedBody.html);
   refreshStatusMeta();
 }
 
@@ -1542,6 +1630,9 @@ function getTextFilterConfig(filterKey) {
 }
 
 function setTextFiltersVisible(visible) {
+  if (remoteContentButton) {
+    remoteContentButton.hidden = !visible;
+  }
   if (filterToolsIcon) {
     filterToolsIcon.hidden = !visible;
   }
@@ -1797,9 +1888,11 @@ function isSupportedExternalUrl(urlValue) {
   }
 }
 
-function sanitizeEmailHtml(html) {
+function sanitizeEmailHtml(html, options = {}) {
+  const { allowRemoteContent = true } = options;
   const template = document.createElement("template");
   template.innerHTML = String(html || "");
+  let blockedRemoteContent = false;
 
   const blockedTags = ["script", "iframe", "object", "embed", "form"];
   for (const tag of blockedTags) {
@@ -1810,21 +1903,85 @@ function sanitizeEmailHtml(html) {
 
   const elements = template.content.querySelectorAll("*");
   for (const element of elements) {
+    if (!allowRemoteContent && element.tagName === "STYLE") {
+      const sanitizedCss = stripRemoteContentFromCss(element.textContent || "");
+      if (sanitizedCss.changed) {
+        blockedRemoteContent = true;
+        if (sanitizedCss.value) {
+          element.textContent = sanitizedCss.value;
+        } else {
+          element.remove();
+          continue;
+        }
+      }
+    }
+
     for (const attr of Array.from(element.attributes)) {
       const attrName = attr.name.toLowerCase();
-      const attrValue = attr.value.trim().toLowerCase();
+      const rawAttrValue = attr.value.trim();
+      const attrValue = rawAttrValue.toLowerCase();
 
       if (attrName.startsWith("on")) {
         element.removeAttribute(attr.name);
+        continue;
       }
 
       if ((attrName === "href" || attrName === "src" || attrName === "srcset") && isUnsafeUrl(attrValue)) {
         element.removeAttribute(attr.name);
+        continue;
+      }
+
+      if (!allowRemoteContent) {
+        if (attrName === "style") {
+          const sanitizedStyle = stripRemoteContentFromCss(rawAttrValue);
+          if (sanitizedStyle.changed) {
+            blockedRemoteContent = true;
+            if (sanitizedStyle.value) {
+              element.setAttribute(attr.name, sanitizedStyle.value);
+            } else {
+              element.removeAttribute(attr.name);
+            }
+          }
+          continue;
+        }
+
+        if (attrName === "poster" || attrName === "background") {
+          if (isRemoteResourceUrl(rawAttrValue)) {
+            element.removeAttribute(attr.name);
+            blockedRemoteContent = true;
+          }
+          continue;
+        }
+
+        if (attrName === "src" || attrName === "srcset") {
+          if (containsRemoteResource(attrName, rawAttrValue)) {
+            element.removeAttribute(attr.name);
+            blockedRemoteContent = true;
+          }
+          continue;
+        }
+
+        if (attrName === "href" && isRemoteResourceUrl(rawAttrValue)) {
+          const tagName = element.tagName;
+          if (tagName === "LINK" || tagName === "BASE") {
+            element.removeAttribute(attr.name);
+            blockedRemoteContent = true;
+            continue;
+          }
+
+          if (tagName !== "A" && tagName !== "AREA") {
+            element.removeAttribute(attr.name);
+            blockedRemoteContent = true;
+          }
+        }
       }
     }
   }
 
-  return template.innerHTML;
+  return {
+    html: template.innerHTML,
+    blockedRemoteContent
+  };
 }
 
 function isUnsafeUrl(urlValue) {
@@ -1833,6 +1990,55 @@ function isUnsafeUrl(urlValue) {
     urlValue.startsWith("vbscript:") ||
     urlValue.startsWith("data:text/html")
   );
+}
+
+function containsRemoteResource(attrName, value) {
+  if (attrName === "srcset") {
+    return String(value || "")
+      .split(",")
+      .some((entry) => {
+        const candidate = entry.trim().split(/\s+/)[0] || "";
+        return isRemoteResourceUrl(candidate);
+      });
+  }
+
+  return isRemoteResourceUrl(value);
+}
+
+function isRemoteResourceUrl(urlValue) {
+  const value = String(urlValue || "").trim().toLowerCase();
+  return (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("//") ||
+    value.startsWith("ftp://")
+  );
+}
+
+function stripRemoteContentFromCss(cssText) {
+  let value = String(cssText || "");
+  let changed = false;
+
+  value = value.replace(/@import\s+(?:url\()?\s*(['"]?)([^'")\s]+)\1\s*\)?[^;]*;/gi, (match, quote, url) => {
+    if (!isRemoteResourceUrl(url)) {
+      return match;
+    }
+    changed = true;
+    return "";
+  });
+
+  value = value.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, quote, url) => {
+    if (!isRemoteResourceUrl(url)) {
+      return match;
+    }
+    changed = true;
+    return "url()";
+  });
+
+  return {
+    value: value.trim(),
+    changed
+  };
 }
 
 function escapeHtml(value) {
