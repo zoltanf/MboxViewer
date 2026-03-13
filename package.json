@@ -1,19 +1,24 @@
 {
   "name": "mbox-viewer",
-  "version": "1.4.0",
+  "version": "1.5.2603131546",
   "description": "Desktop mbox viewer for macOS",
+  "author": {
+    "name": "Zoltan Fekete",
+    "email": "zoltan@fekete.link",
+    "url": "https://github.com/zoltanf"
+  },
   "license": "GPL-3.0-only",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "postinstall": "electron-builder install-app-deps",
     "icons:generate": "node scripts/generate-icons.js",
-    "version:bump:minor": "npm version minor --no-git-tag-version",
-    "prepare:build": "npm run version:bump:minor && npm run icons:generate",
+    "version:set:build": "node scripts/set-build-version.js",
+    "prepare:build": "npm run version:set:build && npm run icons:generate",
     "prepack": "npm run prepare:build",
     "pack": "electron-builder --dir",
     "predist": "npm run prepare:build",
-    "dist": "electron-builder",
+    "dist": "electron-builder --mac --win --linux",
     "predist:mac": "npm run prepare:build",
     "dist:mac": "electron-builder --mac",
     "predist:win": "npm run prepare:build",
@@ -63,6 +68,12 @@
       "target": [
         {
           "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64"
           ]

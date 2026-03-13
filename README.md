@@ -90,10 +90,12 @@ npm run dist
 
 `pack`/`dist` scripts trigger:
 
-- automatic **minor version bump**
+- automatic build-version update using `major.minor.YYMMDDHHmm`
 - icon generation from `assets/app-icon.svg`
 
-If you are packaging frequently, be aware that version in `package.json` will change.
+Example build version: `1.4.2603131526`
+
+If you are packaging frequently, be aware that the version in `package.json` and `package-lock.json` will change on each build.
 
 ## Repository Structure (high level)
 
