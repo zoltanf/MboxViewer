@@ -62,6 +62,12 @@ npm start
 
 Note: `npm install` runs `electron-builder install-app-deps` to rebuild native modules for your Electron version.
 
+### Install on macOS with Homebrew
+
+```bash
+brew install --cask zoltanf/mboxviewer/mbox-viewer
+```
+
 ## Build / Package
 
 Build outputs go to `dist/`.
