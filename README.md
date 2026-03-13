@@ -80,6 +80,31 @@ If macOS blocks the app on first launch because it is not notarized, open:
 
 Then scroll to the bottom and click `Open Anyway` for `Mbox Viewer.app`.
 
+### Open `.mbox` and `.pst` files directly from Finder or Explorer
+
+Packaged builds register Mbox Viewer as a viewer for `.mbox` and `.pst` files, so you can open mailbox files by double-clicking them.
+
+Notes:
+
+- this works with the packaged app, not with `npm start`
+- after installing a new build, you may need to choose Mbox Viewer once as the default app for these file types
+
+On macOS:
+
+- move `Mbox Viewer.app` to `/Applications`
+- select an `.mbox` or `.pst` file in Finder
+- press `Cmd+I`
+- under `Open with`, choose `Mbox Viewer`
+- click `Change All...` if you want to use it for all files of that type
+
+On Windows:
+
+- install the packaged app
+- right-click an `.mbox` or `.pst` file
+- choose `Open with`
+- choose `Mbox Viewer`
+- enable `Always use this app` if you want it as the default
+
 ## Build / Package
 
 Build outputs go to `dist/`.

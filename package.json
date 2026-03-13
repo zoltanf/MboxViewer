@@ -1,6 +1,6 @@
 {
   "name": "mbox-viewer",
-  "version": "1.5.2603131546",
+  "version": "1.5.2603131956",
   "description": "Desktop mbox viewer for macOS",
   "author": {
     "name": "Zoltan Fekete",
@@ -37,6 +37,20 @@
     "directories": {
       "output": "dist"
     },
+    "fileAssociations": [
+      {
+        "ext": "mbox",
+        "name": "Mbox Mailbox Archive",
+        "description": "Email mailbox archive in mbox format",
+        "role": "Viewer"
+      },
+      {
+        "ext": "pst",
+        "name": "Outlook PST Archive",
+        "description": "Microsoft Outlook personal storage archive",
+        "role": "Viewer"
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

@@ -163,9 +163,19 @@ window.addEventListener("resize", () => {
 });
 
 const removeProgressListener = window.mboxApi.onIndexProgress(handleIndexProgress);
+const removeOpenMailboxRequestListener = window.mboxApi.onOpenMailboxRequest((payload) => {
+  const filePath = typeof payload?.filePath === "string" ? payload.filePath : "";
+  if (!filePath) {
+    return;
+  }
+  void openMailboxPath(filePath);
+});
 window.addEventListener("beforeunload", () => {
   if (typeof removeProgressListener === "function") {
     removeProgressListener();
+  }
+  if (typeof removeOpenMailboxRequestListener === "function") {
+    removeOpenMailboxRequestListener();
   }
 });
 
@@ -174,8 +184,34 @@ updateRemoteContentButtonState();
 updateSearchUiState();
 setSearchVisible(false);
 setTextFiltersVisible(false);
+void consumePendingMailboxOpen();
 
 async function openMbox() {
+  return openMailboxRequest(() => window.mboxApi.openMbox());
+}
+
+async function openMailboxPath(filePath) {
+  const normalizedPath = String(filePath || "").trim();
+  if (!normalizedPath) {
+    return;
+  }
+
+  return openMailboxRequest(() => window.mboxApi.openMailboxPath({ filePath: normalizedPath }));
+}
+
+async function consumePendingMailboxOpen() {
+  try {
+    const payload = await window.mboxApi.consumePendingOpenFile();
+    const filePath = typeof payload?.filePath === "string" ? payload.filePath : "";
+    if (filePath) {
+      await openMailboxPath(filePath);
+    }
+  } catch (error) {
+    console.error("Failed to consume pending mailbox open request.", error);
+  }
+}
+
+async function openMailboxRequest(loader) {
   requestToken += 1;
   messageRequestToken += 1;
   if (searchDebounceTimer) {
@@ -188,9 +224,9 @@ async function openMbox() {
   setStatusMessage("Opening mailbox file...");
 
   try {
-    const result = await window.mboxApi.openMbox();
+    const result = await loader();
     if (!result || result.canceled) {
-      setStatusMessage("Open cancelled.");
+      setStatusMessage(result?.error || "Open cancelled.");
       setOpenProgress({ visible: false });
       return;
     }

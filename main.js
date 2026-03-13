@@ -8,10 +8,13 @@ const { isPstFilePath, ensurePstConvertedToMbox } = require("./src/pstConverter"
 
 const DEFAULT_PAGE_SIZE = 200;
 const OPEN_PROGRESS_EVENT = "mbox-index-progress";
+const OPEN_MAILBOX_REQUEST_EVENT = "open-mailbox-request";
 const PREVIEW_WINDOW_DEFAULT_BOUNDS = { width: 960, height: 760 };
 const PREVIEW_WINDOW_MIN_BOUNDS = { width: 480, height: 360 };
 let attachmentPreviewWindow = null;
 let attachmentPreviewWindowState = null;
+let mainWindow = null;
+let pendingOpenFilePath = "";
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -40,7 +43,19 @@ function createWindow() {
     event.preventDefault();
   });
 
+  window.on("closed", () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+    }
+  });
+
+  window.webContents.on("did-finish-load", () => {
+    flushPendingMailboxOpenRequest(window);
+  });
+
   window.loadFile(path.join(__dirname, "src/renderer/index.html"));
+  mainWindow = window;
+  return window;
 }
 
 ipcMain.handle("open-mbox", async (event) => {
@@ -59,24 +74,51 @@ ipcMain.handle("open-mbox", async (event) => {
     return { canceled: true };
   }
 
-  const filePath = result.filePaths[0];
-  const openedAsPst = isPstFilePath(filePath);
-  let sourcePath = filePath;
+  return openMailboxFile(result.filePaths[0], event.sender);
+});
+
+ipcMain.handle("open-mailbox-path", async (event, payload) => {
+  const filePath = typeof payload?.filePath === "string" ? payload.filePath : "";
+  if (!filePath) {
+    return { canceled: true, error: "No mailbox file path was provided." };
+  }
+
+  return openMailboxFile(filePath, event.sender);
+});
+
+ipcMain.handle("consume-pending-open-file", async () => {
+  const filePath = pendingOpenFilePath;
+  pendingOpenFilePath = "";
+  return { filePath };
+});
+
+async function openMailboxFile(filePath, sender) {
+  const normalizedFilePath = normalizeMailboxFilePath(filePath);
+  if (!normalizedFilePath) {
+    return {
+      canceled: true,
+      error: "Unsupported file type. Please open an .mbox or .pst file."
+    };
+  }
+
+  const filePathToOpen = normalizedFilePath;
+  const openedAsPst = isPstFilePath(filePathToOpen);
+  let sourcePath = filePathToOpen;
   let pstConversion = null;
 
-  emitOpenProgress(event.sender, {
+  emitOpenProgress(sender, {
     phase: "preparing",
-    filePath,
+    filePath: filePathToOpen,
     totalBytes: 0,
     bytesRead: 0,
     messagesIndexed: 0
   });
 
   if (openedAsPst) {
-    pstConversion = await ensurePstConvertedToMbox(filePath, {
+    pstConversion = await ensurePstConvertedToMbox(filePathToOpen, {
       onProgress: (payload) => {
-        emitOpenProgress(event.sender, {
-          filePath,
+        emitOpenProgress(sender, {
+          filePath: filePathToOpen,
           ...payload
         });
       }
@@ -84,13 +126,13 @@ ipcMain.handle("open-mbox", async (event) => {
     sourcePath = pstConversion.mboxPath;
   }
 
-  const indexing = await ensureMboxDatabase(sourcePath, event.sender);
+  const indexing = await ensureMboxDatabase(sourcePath, sender);
   const firstPage = searchMessages(indexing.dbPath, "", DEFAULT_PAGE_SIZE, 0);
   const dateBounds = getMessageDateBounds(indexing.dbPath);
 
   return {
     canceled: false,
-    filePath,
+    filePath: filePathToOpen,
     sourcePath,
     sourceType: openedAsPst ? "pst" : "mbox",
     pstConversion,
@@ -108,7 +150,7 @@ ipcMain.handle("open-mbox", async (event) => {
         }
       : null
   };
-});
+}
 
 ipcMain.handle("search-messages", async (_, payload) => {
   const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
@@ -490,18 +532,105 @@ function emitOpenProgress(sender, payload) {
   sender.send(OPEN_PROGRESS_EVENT, payload);
 }
 
-app.whenReady().then(() => {
-  createWindow();
+function normalizeMailboxFilePath(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value || value.startsWith("-")) {
+    return "";
+  }
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+  const extension = path.extname(value).toLowerCase();
+  if (extension !== ".mbox" && extension !== ".pst") {
+    return "";
+  }
+
+  return path.resolve(value);
+}
+
+function findMailboxFilePathInArgv(argvValues) {
+  const values = Array.isArray(argvValues) ? argvValues : [];
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const candidate = normalizeMailboxFilePath(values[index]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function queueOrDispatchMailboxOpen(filePath) {
+  const normalizedPath = normalizeMailboxFilePath(filePath);
+  if (!normalizedPath) {
+    return false;
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.send(OPEN_MAILBOX_REQUEST_EVENT, { filePath: normalizedPath });
+  } else {
+    pendingOpenFilePath = normalizedPath;
+  }
+
+  return true;
+}
+
+function flushPendingMailboxOpenRequest(window) {
+  if (!window || window.isDestroyed() || !pendingOpenFilePath) {
+    return;
+  }
+
+  window.webContents.send(OPEN_MAILBOX_REQUEST_EVENT, { filePath: pendingOpenFilePath });
+  pendingOpenFilePath = "";
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  const initialMailboxFilePath = findMailboxFilePathInArgv(process.argv);
+  if (initialMailboxFilePath) {
+    pendingOpenFilePath = initialMailboxFilePath;
+  }
+
+  app.on("second-instance", (_event, commandLine) => {
+    const nextFilePath = findMailboxFilePathInArgv(commandLine);
+    if (nextFilePath) {
+      queueOrDispatchMailboxOpen(nextFilePath);
+    }
+    focusMainWindow();
+  });
+
+  app.on("open-file", (event, filePath) => {
+    event.preventDefault();
+    queueOrDispatchMailboxOpen(filePath);
+    focusMainWindow();
+  });
+
+  app.whenReady().then(() => {
+    createWindow();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+        return;
+      }
+      focusMainWindow();
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
     }
   });
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+}
