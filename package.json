@@ -1,0 +1,85 @@
+{
+  "name": "mbox-viewer",
+  "version": "1.4.0",
+  "description": "Desktop mbox viewer for macOS",
+  "license": "GPL-3.0-only",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "electron-builder install-app-deps",
+    "icons:generate": "node scripts/generate-icons.js",
+    "version:bump:minor": "npm version minor --no-git-tag-version",
+    "prepare:build": "npm run version:bump:minor && npm run icons:generate",
+    "prepack": "npm run prepare:build",
+    "pack": "electron-builder --dir",
+    "predist": "npm run prepare:build",
+    "dist": "electron-builder",
+    "predist:mac": "npm run prepare:build",
+    "dist:mac": "electron-builder --mac",
+    "predist:win": "npm run prepare:build",
+    "dist:win": "electron-builder --win",
+    "predist:linux": "npm run prepare:build",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "com.zoltanf.mboxviewer",
+    "productName": "Mbox Viewer",
+    "icon": "build/icon.png",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    }
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "pst-extractor": "^1.12.0"
+  }
+}

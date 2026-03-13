@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Attachment Preview</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #eff3f8;
+        --panel: #ffffff;
+        --border: #d7d9df;
+        --text: #111827;
+        --muted: #5b6574;
+        --shadow: 0 18px 42px rgba(15, 23, 42, 0.1);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1119;
+          --panel: #111824;
+          --border: #253245;
+          --text: #e5edf7;
+          --muted: #9aa8bb;
+          --shadow: 0 22px 54px rgba(0, 0, 0, 0.42);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        background: radial-gradient(circle at top, var(--panel) 0%, var(--bg) 58%, var(--bg) 100%);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .preview-header {
+        padding: 14px 18px 12px;
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+        backdrop-filter: blur(10px);
+      }
+
+      .preview-title {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.3;
+      }
+
+      .preview-meta {
+        margin: 6px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+        word-break: break-word;
+      }
+
+      .preview-content {
+        min-height: 0;
+        padding: 18px;
+        display: grid;
+      }
+
+      .preview-surface {
+        min-height: 0;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+      }
+
+      .preview-image {
+        display: block;
+        max-width: 100%;
+        max-height: calc(100vh - 120px);
+        object-fit: contain;
+      }
+
+      .preview-frame {
+        width: 100%;
+        height: 100%;
+        min-height: calc(100vh - 120px);
+        border: 0;
+        background: var(--panel);
+      }
+
+      .preview-empty {
+        margin: 0;
+        padding: 28px;
+        color: var(--muted);
+        font-size: 14px;
+        text-align: center;
+      }
+
+      @media (max-width: 760px) {
+        .preview-content {
+          padding: 10px;
+        }
+
+        .preview-frame {
+          min-height: calc(100vh - 96px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="preview-header">
+      <h1 id="previewTitle" class="preview-title">Attachment Preview</h1>
+      <p id="previewMeta" class="preview-meta"></p>
+    </header>
+    <main class="preview-content">
+      <section id="previewSurface" class="preview-surface"></section>
+    </main>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const fileUrl = params.get("file") || "";
+      const fileName = params.get("name") || "Attachment Preview";
+      const contentType = params.get("type") || "application/octet-stream";
+
+      const previewTitle = document.getElementById("previewTitle");
+      const previewMeta = document.getElementById("previewMeta");
+      const previewSurface = document.getElementById("previewSurface");
+
+      document.title = fileName;
+      previewTitle.textContent = fileName;
+      previewMeta.textContent = `${fileName} | ${contentType}`;
+
+      if (!fileUrl) {
+        previewSurface.innerHTML = '<p class="preview-empty">No preview file was provided.</p>';
+      } else if (contentType.toLowerCase() === "application/pdf") {
+        const frame = document.createElement("iframe");
+        frame.className = "preview-frame";
+        frame.title = fileName;
+        frame.src = fileUrl;
+        previewSurface.appendChild(frame);
+      } else if (contentType.toLowerCase().startsWith("image/")) {
+        const image = document.createElement("img");
+        image.className = "preview-image";
+        image.alt = fileName;
+        image.src = fileUrl;
+        previewSurface.appendChild(image);
+      } else {
+        previewSurface.innerHTML = '<p class="preview-empty">This attachment type does not support preview.</p>';
+      }
+    </script>
+  </body>
+</html>
