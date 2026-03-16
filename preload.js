@@ -1,11 +1,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("mboxApi", {
+  debugTimingsEnabled: process.env.MBOX_VIEWER_DEBUG_TIMINGS === "1",
   openMbox: () => ipcRenderer.invoke("open-mbox"),
   openMailboxPath: (payload) => ipcRenderer.invoke("open-mailbox-path", payload),
   consumePendingOpenFile: () => ipcRenderer.invoke("consume-pending-open-file"),
   searchMessages: (payload) => ipcRenderer.invoke("search-messages", payload),
   getMessage: (payload) => ipcRenderer.invoke("get-message", payload),
+  getMessageSourcePreview: (payload) => ipcRenderer.invoke("get-message-source-preview", payload),
   openExternal: (payload) => ipcRenderer.invoke("open-external", payload),
   copyToClipboard: (payload) => ipcRenderer.invoke("copy-to-clipboard", payload),
   openAttachmentPreview: (payload) => ipcRenderer.invoke("open-attachment-preview", payload),

@@ -1,0 +1,11 @@
+From: "Archive Sender" <sender@example.test>
+To: "Mailbox Reader" <reader@example.test>
+Subject: UTF-8 greeting
+Date: Mon, 10 Mar 2025 09:15:00 +0000
+Message-ID: <utf8-greeting@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hello from the UTF-8 fixture.
+This message is intentionally small and boring.

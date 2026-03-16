@@ -1,0 +1,53 @@
+From alpha@example.test Wed Mar 12 08:00:00 2025
+From: Alpha Sender <alpha@example.test>
+To: Team <team@example.test>
+Subject: Quarterly archive alpha
+Date: Wed, 12 Mar 2025 08:00:00 +0000
+Message-ID: <alpha@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Alpha body for reuse and search testing.
+
+From bravo@example.test Wed Mar 12 09:00:00 2025
+From: Bravo Sender <bravo@example.test>
+To: Team <team@example.test>
+Subject: Quarterly archive bravo
+Date: Wed, 12 Mar 2025 09:00:00 +0000
+Message-ID: <bravo@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Bravo body includes mailbox keyword and attachment mention.
+
+From charlie@example.test Wed Mar 12 10:00:00 2025
+From: Charlie Sender <charlie@example.test>
+To: Team <team@example.test>
+Subject: Quarterly archive charlie
+Date: Wed, 12 Mar 2025 10:00:00 +0000
+Message-ID: <charlie@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="medium-boundary"
+
+--medium-boundary
+Content-Type: text/plain; charset=utf-8
+
+Charlie body with attachment for the medium fixture.
+--medium-boundary
+Content-Type: text/plain; name="charlie.txt"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="charlie.txt"
+
+Q2hhcmxpZSBhdHRhY2htZW50IGNvbnRlbnQuCg==
+--medium-boundary--
+
+From delta@example.test Wed Mar 12 11:00:00 2025
+From: Delta Sender <delta@example.test>
+To: Team <team@example.test>
+Subject: Quarterly archive delta
+Date: Wed, 12 Mar 2025 11:00:00 +0000
+Message-ID: <delta@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Delta body wraps up the medium fixture mailbox.

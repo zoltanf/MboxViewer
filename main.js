@@ -1,17 +1,21 @@
 const path = require("path");
 const os = require("os");
-const { mkdtemp, readFile, rm, stat, writeFile } = require("fs/promises");
+const { mkdtemp, readFile, rm, writeFile } = require("fs/promises");
 const { pathToFileURL } = require("url");
 const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } = require("electron");
 const {
   ensureMboxDatabase,
-  getReusableDatabaseInfo,
+  ensurePstDatabase,
   searchMessages,
   loadMessageById,
+  getAttachmentData,
+  getMessageEmlBuffer,
+  getMessageSourcePreview,
   getMessageDateBounds
 } = require("./src/mboxStore");
 const { parseMessageChunk } = require("./src/mboxParser");
-const { isPstFilePath, ensurePstConvertedToMbox } = require("./src/pstConverter");
+const { isPstFilePath } = require("./src/pstConverter");
+const { createOpenTiming } = require("./src/openTiming");
 
 const DEFAULT_PAGE_SIZE = 200;
 const OPEN_PROGRESS_EVENT = "mbox-index-progress";
@@ -112,97 +116,31 @@ async function openMailboxFile(filePath, sender) {
   const filePathToOpen = normalizedFilePath;
   const openedAsPst = isPstFilePath(filePathToOpen);
   const openedAsEml = isEmlFilePath(filePathToOpen);
-  let sourcePath = filePathToOpen;
-  let pstConversion = null;
+  const openTiming = createOpenTiming(filePathToOpen);
+  openTiming.mark("open-start", { sourceType: openedAsPst ? "pst" : openedAsEml ? "eml" : "mbox" });
 
   if (openedAsEml) {
-    return openEmlFile(filePathToOpen);
+    return openEmlFile(filePathToOpen, openTiming);
   }
-
-  const sourceStats = await stat(filePathToOpen);
-
-  emitOpenProgress(sender, {
-    phase: "preparing",
-    filePath: filePathToOpen,
-    totalBytes: 0,
-    bytesRead: 0,
-    messagesIndexed: 0
+  const indexing = openedAsPst
+    ? await ensurePstDatabase(filePathToOpen, sender, { dbPath: `${filePathToOpen}.sqlite` })
+    : await ensureMboxDatabase(filePathToOpen, sender);
+  openTiming.mark("index-ready", {
+    reused: Boolean(indexing?.reused),
+    totalMessages: Number(indexing?.totalMessages) || 0
   });
-
-  if (openedAsPst) {
-    const pstDbPath = `${filePathToOpen}.sqlite`;
-    const reusableDatabase = await getReusableDatabaseInfo(pstDbPath, filePathToOpen);
-    if (reusableDatabase?.sourceEmbedded) {
-      await cleanupPstSidecarArtifacts(filePathToOpen);
-      emitOpenProgress(sender, {
-        phase: "ready",
-        filePath: filePathToOpen,
-        dbPath: reusableDatabase.dbPath,
-        totalBytes: sourceStats.size,
-        bytesRead: sourceStats.size,
-        messagesIndexed: reusableDatabase.totalMessages,
-        reused: true
-      });
-
-      const firstPage = searchMessages(reusableDatabase.dbPath, "", DEFAULT_PAGE_SIZE, 0);
-      const dateBounds = getMessageDateBounds(reusableDatabase.dbPath);
-
-      return {
-        canceled: false,
-        filePath: filePathToOpen,
-        sourcePath: filePathToOpen,
-        sourceType: "pst",
-        pstConversion: null,
-        dbPath: reusableDatabase.dbPath,
-        total: reusableDatabase.totalMessages,
-        messages: firstPage.messages,
-        offset: firstPage.offset,
-        limit: firstPage.limit,
-        resultTotal: firstPage.total,
-        dateRange: dateBounds
-          ? {
-              from: dateBounds.minDateTs,
-              to: dateBounds.maxDateTs,
-              count: dateBounds.datedCount
-            }
-          : null
-      };
-    }
-  }
-
-  if (openedAsPst) {
-    pstConversion = await ensurePstConvertedToMbox(filePathToOpen, {
-      onProgress: (payload) => {
-        emitOpenProgress(sender, {
-          filePath: filePathToOpen,
-          ...payload
-        });
-      }
-    });
-    sourcePath = pstConversion.mboxPath;
-  }
-
-  const indexing = await ensureMboxDatabase(sourcePath, sender, openedAsPst
-    ? {
-        dbPath: `${filePathToOpen}.sqlite`,
-        sourcePath: filePathToOpen,
-        persistSourceChunks: true
-      }
-    : undefined);
-
-  if (openedAsPst) {
-    await cleanupPstSidecarArtifacts(filePathToOpen);
-  }
 
   const firstPage = searchMessages(indexing.dbPath, "", DEFAULT_PAGE_SIZE, 0);
   const dateBounds = getMessageDateBounds(indexing.dbPath);
+  openTiming.mark("first-page-ready", {
+    pageCount: Array.isArray(firstPage.messages) ? firstPage.messages.length : 0
+  });
 
   return {
     canceled: false,
     filePath: filePathToOpen,
     sourcePath: filePathToOpen,
     sourceType: openedAsPst ? "pst" : "mbox",
-    pstConversion,
     dbPath: indexing.dbPath,
     total: indexing.totalMessages,
     messages: firstPage.messages,
@@ -215,7 +153,11 @@ async function openMailboxFile(filePath, sender) {
           to: dateBounds.maxDateTs,
           count: dateBounds.datedCount
         }
-      : null
+      : null,
+    openTiming: openTiming.snapshot({
+      reused: Boolean(indexing?.reused),
+      totalMessages: Number(indexing?.totalMessages) || 0
+    })
   };
 }
 
@@ -257,33 +199,53 @@ ipcMain.handle("get-message", async (_, payload) => {
 });
 
 ipcMain.handle("save-attachment", async (_, payload) => {
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const messageId = payload?.messageId;
+  const attachmentId = typeof payload?.attachmentId === "string" ? payload.attachmentId : "";
   const fileName = typeof payload?.fileName === "string" ? payload.fileName : "attachment.bin";
   const base64 = typeof payload?.base64 === "string" ? payload.base64 : "";
+  const attachmentData =
+    base64
+      ? {
+          fileName,
+          contentType: typeof payload?.contentType === "string" ? payload.contentType : "application/octet-stream",
+          data: Buffer.from(base64, "base64")
+        }
+      : dbPath && messageId != null && attachmentId
+        ? await getAttachmentData(dbPath, messageId, attachmentId)
+        : null;
 
-  if (!base64) {
+  if (!attachmentData?.data) {
     return { canceled: true, error: "No attachment data" };
   }
 
   const result = await dialog.showSaveDialog({
     title: "Save attachment",
-    defaultPath: fileName
+    defaultPath: attachmentData.fileName || fileName
   });
 
   if (result.canceled || !result.filePath) {
     return { canceled: true };
   }
 
-  const data = Buffer.from(base64, "base64");
-  await writeFile(result.filePath, data);
+  await writeFile(result.filePath, attachmentData.data);
   return { canceled: false, filePath: result.filePath };
 });
 
 ipcMain.handle("save-message-eml", async (_, payload) => {
   const rawFileName = typeof payload?.fileName === "string" ? payload.fileName : "message.eml";
   const fileName = normalizeEmlFileName(rawFileName);
-  const emlSource = typeof payload?.emlSource === "string" ? payload.emlSource : "";
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const messageId = payload?.messageId;
+  const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : "";
+  const emlBuffer =
+    dbPath && messageId != null
+      ? await getMessageEmlBuffer(dbPath, messageId)
+      : sourcePath
+        ? await readFile(sourcePath)
+        : null;
 
-  if (!emlSource.trim()) {
+  if (!emlBuffer || emlBuffer.length === 0) {
     return { canceled: true, error: "No message source available" };
   }
 
@@ -296,9 +258,25 @@ ipcMain.handle("save-message-eml", async (_, payload) => {
     return { canceled: true };
   }
 
-  const normalized = emlSource.replace(/\r?\n/g, "\r\n");
-  await writeFile(result.filePath, normalized, "utf8");
+  await writeFile(result.filePath, emlBuffer);
   return { canceled: false, filePath: result.filePath };
+});
+
+ipcMain.handle("get-message-source-preview", async (_, payload) => {
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const messageId = payload?.messageId;
+  const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : "";
+
+  if (dbPath && messageId != null) {
+    return { text: await getMessageSourcePreview(dbPath, messageId) };
+  }
+
+  if (sourcePath) {
+    const raw = await readFile(sourcePath);
+    return { text: raw.toString("utf8") };
+  }
+
+  return { text: "" };
 });
 
 ipcMain.handle("open-external", async (_, payload) => {
@@ -323,26 +301,46 @@ ipcMain.handle("copy-to-clipboard", async (_, payload) => {
 });
 
 ipcMain.handle("open-attachment-preview", async (event, payload) => {
-  const fileName = typeof payload?.fileName === "string" ? payload.fileName : "attachment";
-  const contentType = typeof payload?.contentType === "string" ? payload.contentType : "";
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const messageId = payload?.messageId;
+  const attachmentId = typeof payload?.attachmentId === "string" ? payload.attachmentId : "";
   const base64 = typeof payload?.base64 === "string" ? payload.base64 : "";
+  const contentType = typeof payload?.contentType === "string" ? payload.contentType : "";
+  const fileName = typeof payload?.fileName === "string" ? payload.fileName : "attachment";
+  const attachmentData =
+    base64
+      ? {
+          fileName,
+          contentType,
+          data: Buffer.from(base64, "base64")
+        }
+      : dbPath && messageId != null && attachmentId
+        ? await getAttachmentData(dbPath, messageId, attachmentId)
+        : null;
   let tempDir = "";
 
-  if (!base64 || !isPreviewableContentType(contentType)) {
+  if (!attachmentData?.data || !isPreviewableContentType(attachmentData.contentType)) {
     return { opened: false };
   }
 
   try {
     tempDir = await mkdtemp(path.join(os.tmpdir(), "mbox-viewer-preview-"));
-    const tempFilePath = path.join(tempDir, buildPreviewFileName(fileName, contentType));
-    await writeFile(tempFilePath, Buffer.from(base64, "base64"));
+    const tempFilePath = path.join(
+      tempDir,
+      buildPreviewFileName(attachmentData.fileName || fileName, attachmentData.contentType)
+    );
+    await writeFile(tempFilePath, attachmentData.data);
 
     const parentWindow = BrowserWindow.fromWebContents(event.sender) || null;
     const previewWindow = await createAttachmentPreviewWindow(parentWindow);
-    const previewUrl = buildAttachmentPreviewPageUrl(tempFilePath, fileName, contentType);
+    const previewUrl = buildAttachmentPreviewPageUrl(
+      tempFilePath,
+      attachmentData.fileName || fileName,
+      attachmentData.contentType
+    );
 
     await previewWindow.loadURL(previewUrl);
-    previewWindow.setTitle(fileName || "Attachment Preview");
+    previewWindow.setTitle(attachmentData.fileName || fileName || "Attachment Preview");
     previewWindow.show();
     previewWindow.focus();
 
@@ -599,23 +597,6 @@ function emitOpenProgress(sender, payload) {
   sender.send(OPEN_PROGRESS_EVENT, payload);
 }
 
-async function cleanupPstSidecarArtifacts(pstPath) {
-  const mboxPath = `${pstPath}.mbox`;
-  const metaPath = `${mboxPath}.meta.json`;
-
-  await Promise.all(
-    [mboxPath, metaPath].map(async (filePath) => {
-      try {
-        await rm(filePath);
-      } catch (error) {
-        if (error && error.code !== "ENOENT") {
-          console.error(`Failed to remove PST sidecar artifact: ${filePath}`, error);
-        }
-      }
-    })
-  );
-}
-
 function normalizeMailboxFilePath(filePath) {
   const value = String(filePath || "").trim();
   if (!value || value.startsWith("-")) {
@@ -634,12 +615,12 @@ function isEmlFilePath(filePath) {
   return String(filePath || "").toLowerCase().endsWith(".eml");
 }
 
-async function openEmlFile(filePath) {
-  const raw = await readFile(filePath, "utf8");
+async function openEmlFile(filePath, openTiming = null) {
+  const raw = await readFile(filePath);
   const parsed = parseMessageChunk(raw, {
     index: 1,
-    includeAttachmentData: true,
-    includeEmlSource: true,
+    includeAttachmentData: "all",
+    includeEmlSource: false,
     includeBodyHtml: true
   });
 
@@ -652,9 +633,11 @@ async function openEmlFile(filePath) {
 
   const message = {
     ...parsed,
-    id: parsed.id || "eml-1",
+    id: 1,
+    sourcePath: filePath,
     resultIndex: 1
   };
+  openTiming?.mark("first-page-ready", { pageCount: 1 });
 
   return {
     canceled: false,
@@ -679,7 +662,11 @@ async function openEmlFile(filePath) {
     limit: 1,
     resultTotal: 1,
     dateRange: null,
-    standaloneMessage: message
+    standaloneMessage: message,
+    openTiming: openTiming?.snapshot({
+      reused: false,
+      totalMessages: 1
+    }) || null
   };
 }
 

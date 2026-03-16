@@ -1,138 +1,169 @@
 const path = require("path");
-const { createWriteStream } = require("fs");
-const { stat, readFile, writeFile, rm } = require("fs/promises");
-const { once } = require("events");
+const Long = require("long");
+const { PSTFile } = require("pst-extractor");
+const { PSTUtil } = require("pst-extractor/dist/PSTUtil.class");
+const { compactWhitespace, plainToHtml, stripHtmlTags } = require("./mboxParser");
 
-const PST_CONVERTER_VERSION = "2";
+const PST_FILE_CACHE = new Map();
 
 function isPstFilePath(filePath) {
   return String(filePath || "").toLowerCase().endsWith(".pst");
 }
 
-async function ensurePstConvertedToMbox(pstPath, options = {}) {
-  const sourceStats = await stat(pstPath);
-  const sourceMtimeMs = Math.trunc(sourceStats.mtimeMs);
-  const mboxPath = `${pstPath}.mbox`;
-  const metaPath = `${mboxPath}.meta.json`;
+async function walkPstMessages(pstPath, options = {}) {
+  const onMessage = typeof options.onMessage === "function" ? options.onMessage : null;
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
-
-  const reusable = await isReusableConversion(metaPath, mboxPath, pstPath, sourceStats.size, sourceMtimeMs);
-  if (reusable) {
-    return {
-      mboxPath,
-      reused: true,
-      messageCount: reusable.messageCount || 0
-    };
-  }
-
-  let messageCount = 0;
-  try {
-    if (onProgress) {
-      onProgress({ phase: "converting-pst", messagesConverted: 0 });
-    }
-    messageCount = await convertPstFileToMbox(pstPath, mboxPath, onProgress);
-  } catch (error) {
-    await safeRemoveFile(mboxPath);
-    throw error;
-  }
-
-  const meta = {
-    converterVersion: PST_CONVERTER_VERSION,
-    sourcePath: pstPath,
-    sourceSize: sourceStats.size,
-    sourceMtimeMs,
-    messageCount,
-    convertedAt: new Date().toISOString()
-  };
-  await writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
-
-  return {
-    mboxPath,
-    reused: false,
-    messageCount
-  };
-}
-
-async function isReusableConversion(metaPath, mboxPath, sourcePath, sourceSize, sourceMtimeMs) {
-  try {
-    const raw = await readFile(metaPath, "utf8");
-    const meta = JSON.parse(raw);
-    if (!meta || typeof meta !== "object") {
-      return null;
-    }
-
-    const valid =
-      meta.converterVersion === PST_CONVERTER_VERSION &&
-      meta.sourcePath === sourcePath &&
-      Number(meta.sourceSize) === Number(sourceSize) &&
-      Number(meta.sourceMtimeMs) === Number(sourceMtimeMs);
-
-    if (!valid) {
-      return null;
-    }
-
-    await stat(mboxPath);
-
-    return {
-      messageCount: Number(meta.messageCount) || 0
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function convertPstFileToMbox(pstPath, mboxPath, onProgress = null) {
-  const { PSTFile } = require("pst-extractor");
-  const pstFile = new PSTFile(pstPath);
-  const output = createWriteStream(mboxPath, { encoding: "utf8" });
-
-  let streamError = null;
-  output.on("error", (error) => {
-    streamError = error;
-  });
-
+  const pstFile = getCachedPstFile(pstPath);
+  const rootFolder = pstFile.getRootFolder();
   let messageCount = 0;
   let lastProgressAt = 0;
 
-  try {
-    const rootFolder = pstFile.getRootFolder();
-
-    await walkFolderTree(rootFolder, async (item) => {
-      if (!isMailLikePstItem(item)) {
-        return;
-      }
-
-      messageCount += 1;
-      const raw = buildMboxMessage(item, messageCount);
-      await writeChunk(output, raw);
-      if (onProgress) {
-        const now = Date.now();
-        if (messageCount === 1 || now - lastProgressAt >= 150) {
-          lastProgressAt = now;
-          onProgress({ phase: "converting-pst", messagesConverted: messageCount });
-        }
-      }
-      if (streamError) {
-        throw streamError;
-      }
-    });
-    await endStream(output);
-  } catch (error) {
-    output.destroy();
-    throw error;
-  } finally {
-    try {
-      pstFile.close();
-    } catch {
-      // Ignore close errors from converter cleanup.
+  await walkFolderTree(rootFolder, async (item) => {
+    if (!isMailLikePstItem(item)) {
+      return;
     }
+
+    messageCount += 1;
+    if (onMessage) {
+      await onMessage(item, messageCount);
+    }
+
+    if (onProgress) {
+      const now = Date.now();
+      if (messageCount === 1 || now - lastProgressAt >= 150) {
+        lastProgressAt = now;
+        onProgress({ phase: "indexing-pst", messagesIndexed: messageCount });
+      }
+    }
+  });
+
+  if (onProgress) {
+    onProgress({ phase: "indexing-pst", messagesIndexed: messageCount, done: true });
   }
 
-  if (streamError) {
-    throw streamError;
+  return { messageCount };
+}
+
+function buildPstIndexRecord(message, index) {
+  const submittedAt = getMessageSubmitDate(message);
+  const from = buildFromHeader(message);
+  const to = normalizeHeaderValue(message.displayTo || "");
+  const date = submittedAt ? submittedAt.toUTCString() : "";
+  const htmlBody = normalizeBodyValue(message.bodyHTML || "");
+  const textBody = normalizeBodyValue(message.body || "") || stripHtmlTags(htmlBody);
+  const attachments = extractMessageAttachments(message, { includeAttachmentData: "none" });
+
+  return {
+    id: index,
+    sourceRef: String(message.descriptorNodeId),
+    subject: normalizeHeaderValue(message.subject || "(No Subject)"),
+    from,
+    to,
+    date,
+    dateTs: submittedAt ? submittedAt.getTime() : null,
+    snippet: compactWhitespace(textBody).slice(0, 180),
+    bodyText: textBody,
+    attachmentNames: attachments.map((attachment) => attachment.fileName || "").filter(Boolean).join(" "),
+    attachments
+  };
+}
+
+function loadPstMessageByDescriptor(pstPath, descriptorId, options = {}) {
+  const message = getPstMessageByDescriptor(pstPath, descriptorId);
+  if (!message || !isMailLikePstItem(message)) {
+    return null;
   }
 
-  return messageCount;
+  const index = Number.parseInt(String(options.index || 0), 10) || 0;
+  const submittedAt = getMessageSubmitDate(message);
+  const subject = normalizeHeaderValue(message.subject || "(No Subject)");
+  const from = buildFromHeader(message);
+  const to = normalizeHeaderValue(message.displayTo || "");
+  const date = submittedAt ? submittedAt.toUTCString() : "";
+  const bodyHtmlRaw = normalizeBodyValue(message.bodyHTML || "");
+  const bodyText = normalizeBodyValue(message.body || "") || stripHtmlTags(bodyHtmlRaw);
+  const attachments = extractMessageAttachments(message, {
+    includeAttachmentData: options.includeAttachmentData === "all" ? "all" : "inline"
+  });
+
+  return {
+    id: index || String(descriptorId),
+    subject,
+    from,
+    to,
+    date,
+    snippet: compactWhitespace(bodyText).slice(0, 180),
+    bodyText,
+    bodyHtml: bodyHtmlRaw || plainToHtml(bodyText),
+    attachments
+  };
+}
+
+function getPstAttachmentData(pstPath, descriptorId, attachmentId) {
+  const message = getPstMessageByDescriptor(pstPath, descriptorId);
+  if (!message || !isMailLikePstItem(message)) {
+    return null;
+  }
+
+  const attachmentIndex = parseAttachmentId(attachmentId);
+  if (attachmentIndex === null) {
+    return null;
+  }
+
+  let attachment = null;
+  try {
+    attachment = message.getAttachment(attachmentIndex);
+  } catch {
+    return null;
+  }
+
+  if (!attachment) {
+    return null;
+  }
+
+  const fileBuffer = readAttachmentBuffer(attachment);
+  if (!fileBuffer) {
+    return null;
+  }
+
+  const fileName = resolveAttachmentFileName(attachment, attachmentIndex);
+  const contentType = resolveAttachmentContentType(attachment, fileName);
+  return {
+    fileName,
+    contentType,
+    data: fileBuffer
+  };
+}
+
+function buildPstEmlBuffer(pstPath, descriptorId) {
+  const message = getPstMessageByDescriptor(pstPath, descriptorId);
+  if (!message || !isMailLikePstItem(message)) {
+    return null;
+  }
+
+  return Buffer.from(buildRfc822Message(message, String(descriptorId)), "utf8");
+}
+
+function getPstSourcePreview(pstPath, descriptorId) {
+  const buffer = buildPstEmlBuffer(pstPath, descriptorId);
+  return buffer ? buffer.toString("utf8") : "";
+}
+
+function getPstMessageByDescriptor(pstPath, descriptorId) {
+  const pstFile = getCachedPstFile(pstPath);
+  return PSTUtil.detectAndLoadPSTObject(pstFile, Long.fromString(String(descriptorId)));
+}
+
+function getCachedPstFile(pstPath) {
+  const normalizedPath = path.resolve(String(pstPath || ""));
+  const existing = PST_FILE_CACHE.get(normalizedPath);
+  if (existing) {
+    return existing;
+  }
+
+  const pstFile = new PSTFile(normalizedPath);
+  PST_FILE_CACHE.set(normalizedPath, pstFile);
+  return pstFile;
 }
 
 async function walkFolderTree(folder, onMessage) {
@@ -191,27 +222,20 @@ function isMailLikePstItem(item) {
   return hasBody || hasSubject;
 }
 
-function buildMboxMessage(message, index) {
-  const submittedAt = message.clientSubmitTime instanceof Date && Number.isFinite(message.clientSubmitTime.getTime())
-    ? message.clientSubmitTime
-    : new Date(0);
-
-  const senderEmail = resolveEnvelopeSender(message);
-  const fromLine = `From ${senderEmail} ${formatEnvelopeDate(submittedAt)}`;
-
+function buildRfc822Message(message, messageIdToken) {
+  const submittedAt = getMessageSubmitDate(message);
   const fromHeader = buildFromHeader(message);
   const toHeader = normalizeHeaderValue(message.displayTo || "");
   const ccHeader = normalizeHeaderValue(message.displayCC || "");
   const subject = normalizeHeaderValue(message.subject || "(No Subject)");
-  const dateHeader = submittedAt.getTime() > 0 ? submittedAt.toUTCString() : "";
-
+  const dateHeader = submittedAt ? submittedAt.toUTCString() : "";
   const htmlBody = normalizeBodyValue(message.bodyHTML || "");
   const textBody = normalizeBodyValue(message.body || "");
   const useHtml = Boolean(htmlBody);
   const primaryBody = useHtml ? htmlBody : textBody;
-  const attachments = extractMessageAttachments(message);
-
+  const attachments = extractMessageAttachments(message, { includeAttachmentData: "all" });
   const headers = [];
+
   headers.push(`Subject: ${subject}`);
   if (fromHeader) {
     headers.push(`From: ${fromHeader}`);
@@ -225,30 +249,28 @@ function buildMboxMessage(message, index) {
   if (dateHeader) {
     headers.push(`Date: ${dateHeader}`);
   }
-  headers.push(`Message-ID: <pst-${index}@mboxviewer.local>`);
+  headers.push(`Message-ID: <pst-${messageIdToken}@mboxviewer.local>`);
   headers.push("MIME-Version: 1.0");
 
   if (attachments.length === 0) {
     headers.push(`Content-Type: ${useHtml ? "text/html" : "text/plain"}; charset=utf-8`);
     headers.push("Content-Transfer-Encoding: 8bit");
-    const escapedBody = escapeMboxBody(primaryBody);
-    return `${fromLine}\n${headers.join("\n")}\n\n${escapedBody}\n\n`;
+    return `${headers.join("\n")}\n\n${primaryBody}\n`;
   }
 
-  const boundary = buildMimeBoundary(index, submittedAt.getTime());
-  headers.push(`Content-Type: multipart/mixed; boundary=\"${boundary}\"`);
-  const multipartBody = buildMultipartMessageBody(boundary, useHtml, primaryBody, attachments);
-  return `${fromLine}\n${headers.join("\n")}\n\n${multipartBody}\n\n`;
+  const boundary = buildMimeBoundary(messageIdToken, submittedAt ? submittedAt.getTime() : 0);
+  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+  return `${headers.join("\n")}\n\n${buildMultipartMessageBody(boundary, useHtml, primaryBody, attachments)}\n`;
 }
 
-function extractMessageAttachments(message) {
+function extractMessageAttachments(message, options = {}) {
+  const includeAttachmentData = options.includeAttachmentData || "none";
   const attachmentCount = Number(message?.numberOfAttachments) || 0;
   if (attachmentCount <= 0) {
     return [];
   }
 
   const attachments = [];
-
   for (let index = 0; index < attachmentCount; index += 1) {
     let attachment = null;
     try {
@@ -261,26 +283,41 @@ function extractMessageAttachments(message) {
       continue;
     }
 
-    const fileBuffer = readAttachmentBuffer(attachment);
-    if (!fileBuffer || fileBuffer.length === 0) {
-      continue;
-    }
-
     const fileName = resolveAttachmentFileName(attachment, index);
     const contentType = resolveAttachmentContentType(attachment, fileName);
     const contentId = normalizeContentId(attachment.contentId || "");
     const isInline = Boolean(contentId) && !attachment.isAttachmentInvisibleInHtml;
+    const shouldReadData =
+      includeAttachmentData === "all" ||
+      (includeAttachmentData === "inline" && isInline);
+    const fileBuffer = shouldReadData ? readAttachmentBuffer(attachment) : null;
 
     attachments.push({
+      id: buildAttachmentId(index),
       fileName,
       contentType,
-      contentId,
+      size: Number(attachment.filesize || attachment.size) || (fileBuffer ? fileBuffer.length : null),
       isInline,
-      base64: toBase64Lines(fileBuffer)
+      contentId,
+      base64: fileBuffer ? fileBuffer.toString("base64") : ""
     });
   }
 
   return attachments;
+}
+
+function parseAttachmentId(attachmentId) {
+  const match = String(attachmentId || "").match(/^pst-att-(\d+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function buildAttachmentId(index) {
+  return `pst-att-${index}`;
 }
 
 function readAttachmentBuffer(attachment) {
@@ -292,15 +329,13 @@ function readAttachmentBuffer(attachment) {
 
     const chunks = [];
     const chunkSize = 8192;
-    let bytesRead = 0;
-
     for (;;) {
       const chunk = Buffer.alloc(chunkSize);
-      bytesRead = stream.readBlock(chunk);
+      const bytesRead = stream.readBlock(chunk);
       if (bytesRead <= 0) {
         break;
       }
-      chunks.push(bytesRead === chunk.length ? chunk : chunk.slice(0, bytesRead));
+      chunks.push(bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead));
     }
 
     return chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
@@ -337,9 +372,7 @@ function sanitizeAttachmentFileName(input) {
 }
 
 function resolveAttachmentContentType(attachment, fileName) {
-  const mimeTag = String(attachment.mimeTag || "")
-    .trim()
-    .toLowerCase();
+  const mimeTag = String(attachment.mimeTag || "").trim().toLowerCase();
   if (/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mimeTag)) {
     return mimeTag;
   }
@@ -377,6 +410,7 @@ function mimeFromExtension(fileName) {
     ".wav": "audio/wav",
     ".mp4": "video/mp4"
   };
+
   return map[extension] || "application/octet-stream";
 }
 
@@ -387,15 +421,13 @@ function normalizeContentId(value) {
     .replace(/^<|>$/g, "");
 }
 
-function buildMimeBoundary(index, timestampMs) {
-  const stamp = Number.isFinite(timestampMs) && timestampMs > 0 ? Math.trunc(timestampMs) : index;
-  return `----mboxviewer-pst-${index}-${stamp.toString(16)}`;
+function buildMimeBoundary(messageIdToken, timestampMs) {
+  const stamp = Number.isFinite(timestampMs) && timestampMs > 0 ? Math.trunc(timestampMs) : Number(messageIdToken) || 0;
+  return `----mboxviewer-pst-${messageIdToken}-${stamp.toString(16)}`;
 }
 
 function buildMultipartMessageBody(boundary, useHtml, primaryBody, attachments) {
   const parts = [];
-
-  const bodyBuffer = Buffer.from(primaryBody || "", "utf8");
   parts.push(
     [
       `--${boundary}`,
@@ -403,7 +435,7 @@ function buildMultipartMessageBody(boundary, useHtml, primaryBody, attachments) 
       "Content-Transfer-Encoding: base64",
       "Content-Disposition: inline",
       "",
-      toBase64Lines(bodyBuffer)
+      toBase64Lines(Buffer.from(primaryBody || "", "utf8"))
     ].join("\n")
   );
 
@@ -411,9 +443,9 @@ function buildMultipartMessageBody(boundary, useHtml, primaryBody, attachments) 
     const encodedName = escapeMimeHeaderParam(attachment.fileName || "attachment.bin");
     const headers = [
       `--${boundary}`,
-      `Content-Type: ${attachment.contentType || "application/octet-stream"}; name=\"${encodedName}\"`,
+      `Content-Type: ${attachment.contentType || "application/octet-stream"}; name="${encodedName}"`,
       "Content-Transfer-Encoding: base64",
-      `Content-Disposition: ${attachment.isInline ? "inline" : "attachment"}; filename=\"${encodedName}\"`
+      `Content-Disposition: ${attachment.isInline ? "inline" : "attachment"}; filename="${encodedName}"`
     ];
     if (attachment.contentId) {
       headers.push(`Content-ID: <${normalizeContentId(attachment.contentId)}>`);
@@ -439,6 +471,7 @@ function toBase64Lines(buffer) {
   if (!value) {
     return "";
   }
+
   const lines = [];
   for (let index = 0; index < value.length; index += 76) {
     lines.push(value.slice(index, index + 76));
@@ -446,21 +479,12 @@ function toBase64Lines(buffer) {
   return lines.join("\n");
 }
 
-function resolveEnvelopeSender(message) {
-  const senderCandidates = [
-    message.senderEmailAddress,
-    extractEmailAddress(String(message.senderName || "")),
-    "unknown@pst.local"
-  ];
-
-  for (const candidate of senderCandidates) {
-    const normalized = sanitizeMailboxToken(candidate);
-    if (normalized) {
-      return normalized;
-    }
+function getMessageSubmitDate(message) {
+  const submittedAt = message.clientSubmitTime;
+  if (!(submittedAt instanceof Date) || !Number.isFinite(submittedAt.getTime()) || submittedAt.getTime() <= 0) {
+    return null;
   }
-
-  return "unknown@pst.local";
+  return submittedAt;
 }
 
 function buildFromHeader(message) {
@@ -473,11 +497,6 @@ function buildFromHeader(message) {
     return email;
   }
   return name;
-}
-
-function extractEmailAddress(input) {
-  const match = String(input || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return match ? match[0] : "";
 }
 
 function sanitizeMailboxToken(input) {
@@ -504,52 +523,12 @@ function normalizeBodyValue(value) {
     .replace(/\r/g, "\n");
 }
 
-function escapeMboxBody(body) {
-  return String(body || "")
-    .split("\n")
-    .map((line) => (line.startsWith("From ") ? `>${line}` : line))
-    .join("\n");
-}
-
-function formatEnvelopeDate(date) {
-  const parsed = date instanceof Date && Number.isFinite(date.getTime()) ? date : new Date(0);
-  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const dayName = dayNames[parsed.getDay()];
-  const month = monthNames[parsed.getMonth()];
-  const day = String(parsed.getDate()).padStart(2, " ");
-  const hh = String(parsed.getHours()).padStart(2, "0");
-  const mm = String(parsed.getMinutes()).padStart(2, "0");
-  const ss = String(parsed.getSeconds()).padStart(2, "0");
-  const year = parsed.getFullYear();
-  return `${dayName} ${month} ${day} ${hh}:${mm}:${ss} ${year}`;
-}
-
-async function writeChunk(stream, text) {
-  if (stream.write(text)) {
-    return;
-  }
-  await once(stream, "drain");
-}
-
-async function endStream(stream) {
-  await new Promise((resolve, reject) => {
-    stream.on("error", reject);
-    stream.end(resolve);
-  });
-}
-
-async function safeRemoveFile(filePath) {
-  try {
-    await rm(filePath);
-  } catch (error) {
-    if (!error || error.code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
 module.exports = {
   isPstFilePath,
-  ensurePstConvertedToMbox
+  walkPstMessages,
+  buildPstIndexRecord,
+  loadPstMessageByDescriptor,
+  getPstAttachmentData,
+  buildPstEmlBuffer,
+  getPstSourcePreview
 };

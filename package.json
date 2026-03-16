@@ -11,6 +11,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
+    "test:perf": "node scripts/perf.js",
     "postinstall": "electron-builder install-app-deps",
     "icons:generate": "node scripts/generate-icons.js",
     "version:set:build": "node scripts/set-build-version.js",

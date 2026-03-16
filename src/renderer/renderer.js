@@ -63,6 +63,7 @@ let selectedMessageId = null;
 let currentPageMessages = [];
 let currentStandaloneMessage = null;
 let resultIndexById = new Map();
+let mailItemById = new Map();
 let searchDebounceTimer = null;
 let requestToken = 0;
 let messageRequestToken = 0;
@@ -81,6 +82,7 @@ let remoteContentEnabled = false;
 let externalLinkModalOpen = false;
 let emlSourceModalOpen = false;
 let pendingExternalUrl = "";
+let pendingOpenTiming = null;
 
 openButton.addEventListener("click", openMbox);
 if (remoteContentButton) {
@@ -216,6 +218,7 @@ async function consumePendingMailboxOpen() {
 async function openMailboxRequest(loader) {
   requestToken += 1;
   messageRequestToken += 1;
+  pendingOpenTiming = null;
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
@@ -237,6 +240,12 @@ async function openMailboxRequest(loader) {
     mboxPath = result.filePath || "";
     totalMessages = Number.isInteger(result.total) ? result.total : 0;
     currentStandaloneMessage = result?.standaloneMessage || null;
+    pendingOpenTiming = result?.openTiming
+      ? {
+          ...result.openTiming,
+          clientReceivedAtMs: performance.now()
+        }
+      : null;
     setSearchVisible(Boolean(dbPath));
     setTextFiltersVisible(Boolean(dbPath));
     setRemoteContentVisible(Boolean(dbPath || currentStandaloneMessage));
@@ -250,8 +259,12 @@ async function openMailboxRequest(loader) {
 
     applyPageResult(result);
     setOpenProgress({ visible: true, indeterminate: false, value: 100 });
-    await loadSelectedMessage();
     setStatusMessage(`Loaded ${totalMessages} email${totalMessages === 1 ? "" : "s"} from ${mboxPath}`);
+    if (selectedMessageId) {
+      setTimeout(() => {
+        void loadSelectedMessage();
+      }, 0);
+    }
   } catch (error) {
     setStatusMessage("Failed to open file.");
     setOpenProgress({ visible: false });
@@ -470,8 +483,7 @@ function moveMessageSelection(direction) {
     if (!nextMessage) {
       return;
     }
-    selectedMessageId = nextMessage.id;
-    renderList();
+    setSelectedMessage(nextMessage.id);
     scrollSelectedMessageIntoView();
     void loadSelectedMessage();
     return;
@@ -484,8 +496,7 @@ function moveMessageSelection(direction) {
       return;
     }
 
-    selectedMessageId = nextMessage.id;
-    renderList();
+    setSelectedMessage(nextMessage.id);
     scrollSelectedMessageIntoView();
     void loadSelectedMessage();
     return;
@@ -528,8 +539,7 @@ async function jumpToAbsoluteMessageIndex(targetIndex) {
       return;
     }
 
-    selectedMessageId = nextMessage.id;
-    renderList();
+    setSelectedMessage(nextMessage.id);
     scrollSelectedMessageIntoView();
     await loadSelectedMessage();
     return;
@@ -764,19 +774,18 @@ function renderExternalLinkPreview(urlValue) {
   )}`;
 }
 
-async function openAttachmentPreview(attachment) {
+async function openAttachmentPreview(attachment, messageId = selectedMessageId) {
   if (!isPreviewableAttachment(attachment)) {
     setStatusMessage("Preview is only available for image and PDF attachments.");
-    return;
-  }
-  if (!attachment?.base64) {
-    setStatusMessage("Preview data is not available for this attachment.");
     return;
   }
 
   setStatusMessage(`Opening preview for ${attachment.fileName || "attachment"}...`);
   try {
     const result = await window.mboxApi.openAttachmentPreview({
+      dbPath,
+      messageId,
+      attachmentId: attachment.id,
       fileName: attachment.fileName || "attachment",
       contentType: attachment.contentType || "application/octet-stream",
       base64: attachment.base64 || ""
@@ -788,6 +797,24 @@ async function openAttachmentPreview(attachment) {
     setStatusMessage(`Preview opened for ${attachment.fileName || "attachment"}.`);
   } catch (error) {
     setStatusMessage("Could not open attachment preview.");
+    console.error(error);
+  }
+}
+
+async function openCurrentMessageSourcePreview(msg) {
+  if (!msg) {
+    return;
+  }
+
+  try {
+    const result = await window.mboxApi.getMessageSourcePreview({
+      dbPath,
+      messageId: dbPath ? msg.id : null,
+      sourcePath: !dbPath ? msg.sourcePath || currentStandaloneMessage?.sourcePath || mboxPath : ""
+    });
+    openEmlSourcePreview(result?.text || "");
+  } catch (error) {
+    setStatusMessage("Could not load message source.");
     console.error(error);
   }
 }
@@ -999,10 +1026,12 @@ function applyPageResult(result, options = {}) {
   const append = options.append === true;
   const incomingMessages = Array.isArray(result?.messages) ? result.messages : [];
   const previousScrollTop = mailListPanel ? mailListPanel.scrollTop : 0;
+  const previousSelectedId = selectedMessageId;
+  let appendedMessages = [];
 
   if (append) {
     const seenIds = new Set(currentPageMessages.map((message) => message.id));
-    const appendedMessages = incomingMessages.filter((message) => !seenIds.has(message.id));
+    appendedMessages = incomingMessages.filter((message) => !seenIds.has(message.id));
     currentPageMessages = currentPageMessages.concat(appendedMessages);
     resultIndexById = new Map(currentPageMessages.map((message) => [message.id, message.resultIndex || null]));
 
@@ -1032,7 +1061,12 @@ function applyPageResult(result, options = {}) {
     selectedMessageId = currentPageMessages[0]?.id ?? null;
   }
 
-  renderList();
+  if (append && mailItemById.size > 0) {
+    appendMailListItems(appendedMessages);
+    updateListSelection(previousSelectedId, selectedMessageId);
+  } else {
+    renderList();
+  }
   if (append && mailListPanel) {
     mailListPanel.scrollTop = previousScrollTop;
   } else if (!append && mailListPanel) {
@@ -1138,6 +1172,7 @@ async function loadSelectedMessage(expectedPageToken = requestToken) {
 
 function renderList() {
   mailList.innerHTML = "";
+  mailItemById = new Map();
 
   if (!dbPath && currentPageMessages.length === 0) {
     const empty = document.createElement("li");
@@ -1158,43 +1193,111 @@ function renderList() {
   }
 
   for (const msg of currentPageMessages) {
-    const sender = getSenderDisplay(msg.from || "Unknown sender");
-    const dateLabel = formatListDate(msg.date || "");
-    const snippet = compactText(msg.snippet || "");
-    const attachmentBadge = msg.hasAttachments
-      ? `
-        <span class="mail-attachment-indicator" aria-label="Has attachment" title="Has attachment">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M8.5 12.5v4.25a3.25 3.25 0 1 0 6.5 0v-7.5a2 2 0 1 0-4 0v6.75a.75.75 0 0 0 1.5 0v-5.75a1 1 0 1 1 2 0v5.75a2.75 2.75 0 0 1-5.5 0V9.25a4.5 4.5 0 0 1 9 0v7.5a5 5 0 1 1-10 0V12.5a.75.75 0 0 1 1.5 0Z"
-              fill="currentColor"
-            ></path>
-          </svg>
-        </span>
-      `
-      : "";
-    const item = document.createElement("li");
-    item.className = `mail-item${msg.id === selectedMessageId ? " active" : ""}`;
-    item.innerHTML = `
-      <div class="mail-row-top">
-        <div class="mail-from" title="${escapeHtml(msg.from || "Unknown sender")}">${escapeHtml(sender)}</div>
-        <div class="mail-date-wrap">
-          ${attachmentBadge}
-          <span class="mail-date">${escapeHtml(dateLabel)}</span>
-        </div>
-      </div>
-      <p class="mail-subject-line">${escapeHtml(msg.subject || "(No Subject)")}</p>
-      <div class="mail-snippet">${escapeHtml(snippet)}</div>
-    `;
-
-    item.addEventListener("click", () => {
-      selectedMessageId = msg.id;
-      renderList();
-      void loadSelectedMessage();
-    });
-
-    mailList.appendChild(item);
+    mailList.appendChild(createMailItem(msg));
   }
+}
+
+function appendMailListItems(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return;
+  }
+
+  if (mailList.querySelector(".empty")) {
+    renderList();
+    return;
+  }
+
+  for (const msg of messages) {
+    if (mailItemById.has(msg.id)) {
+      continue;
+    }
+    mailList.appendChild(createMailItem(msg));
+  }
+}
+
+function createMailItem(msg) {
+  const sender = getSenderDisplay(msg.from || "Unknown sender");
+  const dateLabel = formatListDate(msg.date || "");
+  const snippet = compactText(msg.snippet || "");
+  const attachmentBadge = msg.hasAttachments
+    ? `
+      <span class="mail-attachment-indicator" aria-label="Has attachment" title="Has attachment">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M8.5 12.5v4.25a3.25 3.25 0 1 0 6.5 0v-7.5a2 2 0 1 0-4 0v6.75a.75.75 0 0 0 1.5 0v-5.75a1 1 0 1 1 2 0v5.75a2.75 2.75 0 0 1-5.5 0V9.25a4.5 4.5 0 0 1 9 0v7.5a5 5 0 1 1-10 0V12.5a.75.75 0 0 1 1.5 0Z"
+            fill="currentColor"
+          ></path>
+        </svg>
+      </span>
+    `
+    : "";
+  const item = document.createElement("li");
+  item.className = `mail-item${msg.id === selectedMessageId ? " active" : ""}`;
+  item.dataset.messageId = String(msg.id);
+  item.innerHTML = `
+    <div class="mail-row-top">
+      <div class="mail-from" title="${escapeHtml(msg.from || "Unknown sender")}">${escapeHtml(sender)}</div>
+      <div class="mail-date-wrap">
+        ${attachmentBadge}
+        <span class="mail-date">${escapeHtml(dateLabel)}</span>
+      </div>
+    </div>
+    <p class="mail-subject-line">${escapeHtml(msg.subject || "(No Subject)")}</p>
+    <div class="mail-snippet">${escapeHtml(snippet)}</div>
+  `;
+
+  item.addEventListener("click", () => {
+    setSelectedMessage(msg.id);
+    void loadSelectedMessage();
+  });
+
+  mailItemById.set(msg.id, item);
+  return item;
+}
+
+function setSelectedMessage(nextMessageId) {
+  const nextId = nextMessageId ?? null;
+  const previousId = selectedMessageId;
+  if (previousId === nextId) {
+    return;
+  }
+
+  selectedMessageId = nextId;
+  updateListSelection(previousId, nextId);
+}
+
+function updateListSelection(previousId, nextId) {
+  const previousItem = mailItemById.get(previousId);
+  if (previousItem) {
+    previousItem.classList.remove("active");
+  }
+
+  const nextItem = mailItemById.get(nextId);
+  if (nextItem) {
+    nextItem.classList.add("active");
+  }
+}
+
+function logPendingOpenTiming(extra = null) {
+  if (!pendingOpenTiming || !window.mboxApi.debugTimingsEnabled) {
+    pendingOpenTiming = null;
+    return;
+  }
+
+  const clientDeltaMs = Math.max(0, Math.round(performance.now() - (pendingOpenTiming.clientReceivedAtMs || 0)));
+  const firstMessageAtMs = Math.max(0, Math.round((pendingOpenTiming.totalMs || 0) + clientDeltaMs));
+  console.log("[mbox-open-timing]", {
+    ...pendingOpenTiming,
+    marks: [
+      ...(Array.isArray(pendingOpenTiming.marks) ? pendingOpenTiming.marks : []),
+      {
+        label: "first-message-rendered",
+        atMs: firstMessageAtMs,
+        ...(extra && typeof extra === "object" ? extra : {})
+      }
+    ]
+  });
+  pendingOpenTiming = null;
 }
 
 function renderMessage(msg) {
@@ -1299,7 +1402,11 @@ function renderMessage(msg) {
       setStatusMessage(`Saving ${attachment.fileName || "attachment"}...`);
       try {
         const result = await window.mboxApi.saveAttachment({
+          dbPath,
+          messageId: msg.id,
+          attachmentId: attachment.id,
           fileName: attachment.fileName || "attachment.bin",
+          contentType: attachment.contentType || "application/octet-stream",
           base64: attachment.base64 || ""
         });
 
@@ -1323,7 +1430,7 @@ function renderMessage(msg) {
       if (!attachment) {
         return;
       }
-      void openAttachmentPreview(attachment);
+      void openAttachmentPreview(attachment, msg.id);
     });
   }
 
@@ -1334,7 +1441,9 @@ function renderMessage(msg) {
       try {
         const result = await window.mboxApi.saveMessageEml({
           fileName: buildEmlFileName(msg),
-          emlSource: msg.emlSource || ""
+          dbPath,
+          messageId: dbPath ? msg.id : null,
+          sourcePath: !dbPath ? msg.sourcePath || currentStandaloneMessage?.sourcePath || mboxPath : ""
         });
 
         if (!result || result.canceled) {
@@ -1353,7 +1462,7 @@ function renderMessage(msg) {
   const previewEmlButton = document.getElementById("previewEmlButton");
   if (previewEmlButton) {
     previewEmlButton.addEventListener("click", () => {
-      openEmlSourcePreview(msg.emlSource || "");
+      void openCurrentMessageSourcePreview(msg);
     });
   }
 
@@ -1361,6 +1470,10 @@ function renderMessage(msg) {
   frame.addEventListener("load", () => {
     bindExternalLinksInFrame(frame);
     fitMessageFrameToContent(frame);
+    logPendingOpenTiming({
+      firstMessageId: msg.id,
+      attachmentCount: attachments.length
+    });
   });
   frame.srcdoc = buildFrameDocument(sanitizedBody.html);
   refreshStatusMeta();
@@ -1378,13 +1491,6 @@ function handleIndexProgress(payload) {
     return;
   }
 
-  if (phase === "converting-pst") {
-    const convertedMessages = Number(payload.messagesConverted) || 0;
-    setOpenProgress({ visible: true, indeterminate: true, value: 18 });
-    setStatusMessage(`Converting PST messages${convertedMessages > 0 ? ` | ${convertedMessages} converted` : "..."}`);
-    return;
-  }
-
   if (phase === "indexing") {
     const bytesRead = Number(payload.bytesRead) || 0;
     const totalBytes = Number(payload.totalBytes) || 0;
@@ -1394,6 +1500,13 @@ function handleIndexProgress(payload) {
     setStatusMessage(
       `Indexing ${(percent || 0).toFixed(1)}% | ${formatBytes(bytesRead)} / ${formatBytes(totalBytes)} | ${messagesIndexed} emails`
     );
+    return;
+  }
+
+  if (phase === "indexing-pst") {
+    const messagesIndexed = Number(payload.messagesIndexed) || 0;
+    setOpenProgress({ visible: true, indeterminate: true, value: 24 });
+    setStatusMessage(`Indexing PST messages${messagesIndexed > 0 ? ` | ${messagesIndexed} emails` : "..."}`);
     return;
   }
 
@@ -2108,7 +2221,7 @@ function escapeHtml(value) {
 
 function isPreviewableAttachment(attachment) {
   const contentType = String(attachment?.contentType || "").toLowerCase();
-  if (!contentType || !attachment?.base64) {
+  if (!contentType) {
     return false;
   }
   return contentType.startsWith("image/") || contentType === "application/pdf";

@@ -1,5 +1,5 @@
 function parseMbox(raw, options = {}) {
-  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  const lines = normalizeRawText(raw).replace(/\r\n/g, "\n").split("\n");
   const chunks = [];
   let current = [];
 
@@ -23,12 +23,18 @@ function parseMbox(raw, options = {}) {
 
 function parseMessageChunk(chunk, options = {}) {
   const normalizedOptions = {
-    includeAttachmentData: options.includeAttachmentData !== false,
+    includeAttachmentData:
+      options.includeAttachmentData === "inline"
+        ? "inline"
+        : options.includeAttachmentData === false
+          ? "none"
+          : "all",
     includeEmlSource: options.includeEmlSource !== false,
     includeBodyHtml: options.includeBodyHtml !== false
   };
   const index = Number.isInteger(options.index) ? options.index : 0;
-  const lines = chunk.split("\n");
+  const chunkText = normalizeRawText(chunk);
+  const lines = chunkText.replace(/\r\n/g, "\n").split("\n");
   if (lines.length === 0) {
     return null;
   }
@@ -62,7 +68,7 @@ function parseMessageChunk(chunk, options = {}) {
     size: attachment.size,
     isInline: attachment.isInline,
     contentId: attachment.contentId,
-    base64: normalizedOptions.includeAttachmentData ? attachment.base64 : ""
+    base64: normalizedOptions.includeAttachmentData !== "none" ? attachment.base64 : ""
   }));
 
   return {
@@ -154,7 +160,10 @@ function parseEntity(headers, bodyRaw, state, options) {
   }
 
   const resolvedName = fileName || defaultAttachmentName(mediaType, state);
-  const textBuffer = options.includeAttachmentData ? decodeTransferToBuffer(bodyRaw, transferEncoding) : null;
+  const includeAttachmentData =
+    options.includeAttachmentData === "all" ||
+    (options.includeAttachmentData === "inline" && isInline);
+  const textBuffer = includeAttachmentData ? decodeTransferToBuffer(bodyRaw, transferEncoding) : null;
   return {
     text: "",
     html: "",
@@ -172,7 +181,7 @@ function parseEntity(headers, bodyRaw, state, options) {
 }
 
 function parseRawPart(rawPart) {
-  const lines = rawPart.replace(/\r\n/g, "\n").split("\n");
+  const lines = normalizeRawText(rawPart).replace(/\r\n/g, "\n").split("\n");
   const separatorIndex = lines.findIndex((line) => line.trim() === "");
   const headerLines = separatorIndex === -1 ? lines : lines.slice(0, separatorIndex);
   const bodyLines = separatorIndex === -1 ? [] : lines.slice(separatorIndex + 1);
@@ -355,7 +364,7 @@ function decodeTransferToBuffer(input, encoding) {
   if (encoding.includes("quoted-printable")) {
     return decodeQuotedPrintableToBuffer(input);
   }
-  return Buffer.from(input, "utf8");
+  return Buffer.from(normalizeRawText(input), "latin1");
 }
 
 function decodeQuotedPrintableToBuffer(input) {
@@ -375,12 +384,19 @@ function decodeQuotedPrintableToBuffer(input) {
 }
 
 function decodeBase64ToBuffer(input) {
-  const cleaned = input.replace(/[^A-Za-z0-9+/=]/g, "");
+  const cleaned = normalizeRawText(input).replace(/[^A-Za-z0-9+/=]/g, "");
   try {
     return Buffer.from(cleaned, "base64");
   } catch {
-    return Buffer.from(input, "utf8");
+    return Buffer.from(normalizeRawText(input), "latin1");
   }
+}
+
+function normalizeRawText(value) {
+  if (Buffer.isBuffer(value)) {
+    return value.toString("latin1");
+  }
+  return String(value || "");
 }
 
 function decodeBuffer(buffer, charset) {
@@ -481,5 +497,8 @@ function hash(input) {
 
 module.exports = {
   parseMbox,
-  parseMessageChunk
+  parseMessageChunk,
+  plainToHtml,
+  stripHtmlTags,
+  compactWhitespace
 };

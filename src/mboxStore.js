@@ -2,12 +2,20 @@ const { stat, open, rm } = require("fs/promises");
 const { createReadStream } = require("fs");
 const { setImmediate: waitForImmediate } = require("timers/promises");
 const { parseMessageChunk } = require("./mboxParser");
+const {
+  walkPstMessages,
+  buildPstIndexRecord,
+  loadPstMessageByDescriptor,
+  getPstAttachmentData,
+  buildPstEmlBuffer,
+  getPstSourcePreview
+} = require("./pstConverter");
 
-const SCHEMA_VERSION = "2";
-const PARSER_VERSION = "1";
+const SCHEMA_VERSION = "3";
+const PARSER_VERSION = "2";
 const PROGRESS_EVENT = "mbox-index-progress";
 const DB_CACHE = new Map();
-const BATCH_SIZE = 200;
+const BATCH_SIZE = 250;
 const MESSAGE_LIST_ORDER_SQL = "date_ts IS NULL, date_ts DESC, id DESC";
 const MESSAGE_LIST_ORDER_SQL_ALIASED = "m.date_ts IS NULL, m.date_ts DESC, m.id DESC";
 const DatabaseClass = resolveDatabaseClass();
@@ -19,7 +27,7 @@ function resolveDatabaseClass() {
       return DatabaseSync;
     }
   } catch {
-    // Fallback to external SQLite package for Electron runtimes without node:sqlite.
+    // Fall back when node:sqlite is unavailable in Electron.
   }
 
   try {
@@ -37,18 +45,17 @@ function resolveDatabaseClass() {
 }
 
 async function ensureMboxDatabase(filePath, sender, options = {}) {
-  const indexSourceStats = await stat(filePath);
+  const sourceStats = await stat(filePath);
   const dbPath = typeof options?.dbPath === "string" && options.dbPath ? options.dbPath : `${filePath}.sqlite`;
   const metaSourcePath = typeof options?.sourcePath === "string" && options.sourcePath ? options.sourcePath : filePath;
-  const persistSourceChunks = Boolean(options?.persistSourceChunks);
-  const metaSourceStats = metaSourcePath === filePath ? indexSourceStats : await stat(metaSourcePath);
+  const metaSourceStats = metaSourcePath === filePath ? sourceStats : await stat(metaSourcePath);
   const sourceMtimeMs = Math.trunc(metaSourceStats.mtimeMs);
 
   emitProgress(sender, {
     phase: "preparing",
     filePath,
     dbPath,
-    totalBytes: indexSourceStats.size,
+    totalBytes: sourceStats.size,
     bytesRead: 0,
     messagesIndexed: 0
   });
@@ -59,8 +66,8 @@ async function ensureMboxDatabase(filePath, sender, options = {}) {
       phase: "ready",
       filePath,
       dbPath,
-      totalBytes: indexSourceStats.size,
-      bytesRead: indexSourceStats.size,
+      totalBytes: sourceStats.size,
+      bytesRead: sourceStats.size,
       messagesIndexed: totalMessages,
       reused: true
     });
@@ -70,77 +77,10 @@ async function ensureMboxDatabase(filePath, sender, options = {}) {
   closeDatabase(dbPath);
   await removeDbFiles(dbPath);
   const db = createWritableDatabase(dbPath);
-
-  const insertMessage = db.prepare(`
-    INSERT INTO messages (
-      id,
-      subject,
-      sender,
-      recipient,
-      date_raw,
-      date_ts,
-      snippet,
-      body_text,
-      attachment_names,
-      byte_start,
-      byte_end
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertAttachment = db.prepare(`
-    INSERT INTO attachments (
-      message_id,
-      file_name,
-      content_type,
-      size,
-      is_inline,
-      content_id
-    ) VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  const insertFts = db.prepare(`
-    INSERT INTO message_fts (
-      rowid,
-      subject,
-      sender,
-      recipient,
-      snippet,
-      body_text,
-      attachment_names
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertMessageSource = persistSourceChunks
-    ? db.prepare(`
-        INSERT INTO message_source (
-          message_id,
-          raw_chunk
-        ) VALUES (?, ?)
-      `)
-    : null;
-
+  const statements = createInsertStatements(db);
   let messagesIndexed = 0;
-  let bytesRead = 0;
-  let lastProgressAt = 0;
   let transactionOpen = false;
-  let writableDbClosed = false;
-
-  const closeWritableDb = () => {
-    if (writableDbClosed) {
-      return;
-    }
-    writableDbClosed = true;
-    try {
-      db.close();
-    } catch {
-      // Ignore close failures during teardown.
-    }
-  };
-
-  const commitBatch = () => {
-    if (!transactionOpen) {
-      return;
-    }
-    db.exec("COMMIT");
-    transactionOpen = false;
-  };
+  let lastProgressAt = 0;
 
   try {
     db.exec("BEGIN");
@@ -149,78 +89,45 @@ async function ensureMboxDatabase(filePath, sender, options = {}) {
     await streamMboxMessages(
       filePath,
       async ({ rawChunk, byteStart, byteEnd }) => {
-        messagesIndexed += 1;
+        const nextId = messagesIndexed + 1;
         const parsed = parseMessageChunk(rawChunk, {
-          index: messagesIndexed,
+          index: nextId,
           includeAttachmentData: false,
           includeEmlSource: false,
           includeBodyHtml: false
         });
-
         if (!parsed) {
           return;
         }
 
-        const subject = parsed.subject || "";
-        const senderValue = parsed.from || "";
-        const recipient = parsed.to || "";
-        const dateRaw = parsed.date || "";
-        const snippet = parsed.snippet || "";
-        const dateTs = parseMessageDateToTimestamp(dateRaw);
-        const bodyText = parsed.bodyText || "";
-        const attachmentNames = (parsed.attachments || [])
-          .map((attachment) => attachment.fileName || "")
-          .filter(Boolean)
-          .join(" ");
-
-        insertMessage.run(
-          messagesIndexed,
-          subject,
-          senderValue,
-          recipient,
-          dateRaw,
-          dateTs,
-          snippet,
-          bodyText,
-          attachmentNames,
+        messagesIndexed = nextId;
+        insertIndexRecord(statements, {
+          id: nextId,
+          sourceKind: "mbox",
+          sourceRef: "",
+          subject: parsed.subject || "",
+          from: parsed.from || "",
+          to: parsed.to || "",
+          date: parsed.date || "",
+          dateTs: parseMessageDateToTimestamp(parsed.date || ""),
+          snippet: parsed.snippet || "",
+          bodyText: parsed.bodyText || "",
+          attachmentNames: (parsed.attachments || [])
+            .map((attachment) => attachment.fileName || "")
+            .filter(Boolean)
+            .join(" "),
+          attachments: parsed.attachments || [],
           byteStart,
           byteEnd
-        );
-
-        insertFts.run(
-          messagesIndexed,
-          subject,
-          senderValue,
-          recipient,
-          snippet,
-          bodyText,
-          attachmentNames
-        );
-
-        if (insertMessageSource) {
-          insertMessageSource.run(messagesIndexed, rawChunk);
-        }
-
-        for (const attachment of parsed.attachments || []) {
-          insertAttachment.run(
-            messagesIndexed,
-            attachment.fileName || "",
-            attachment.contentType || "",
-            attachment.size,
-            attachment.isInline ? 1 : 0,
-            attachment.contentId || ""
-          );
-        }
+        });
 
         if (messagesIndexed % BATCH_SIZE === 0) {
-          commitBatch();
+          db.exec("COMMIT");
           db.exec("BEGIN");
-          transactionOpen = true;
           await waitForImmediate();
         }
       },
       async (progress) => {
-        bytesRead = progress.bytesRead;
         const now = Date.now();
         if (progress.done || now - lastProgressAt >= 200) {
           lastProgressAt = now;
@@ -228,8 +135,8 @@ async function ensureMboxDatabase(filePath, sender, options = {}) {
             phase: "indexing",
             filePath,
             dbPath,
-            totalBytes: indexSourceStats.size,
-            bytesRead,
+            totalBytes: sourceStats.size,
+            bytesRead: progress.bytesRead,
             messagesIndexed
           });
           await waitForImmediate();
@@ -237,31 +144,126 @@ async function ensureMboxDatabase(filePath, sender, options = {}) {
       }
     );
 
-    commitBatch();
-    db.exec("ANALYZE");
-    db.exec("INSERT INTO message_fts(message_fts) VALUES ('optimize')");
-    writeMeta(db, metaSourcePath, metaSourceStats.size, sourceMtimeMs, messagesIndexed, {
-      sourceEmbedded: persistSourceChunks
-    });
+    db.exec("COMMIT");
+    transactionOpen = false;
+    finalizeDatabase(db, metaSourcePath, metaSourceStats.size, sourceMtimeMs, messagesIndexed);
   } catch (error) {
     if (transactionOpen) {
       try {
         db.exec("ROLLBACK");
       } catch {
-        // Ignore rollback failures after parser/db errors.
+        // Ignore cleanup failures after index errors.
       }
     }
-    closeWritableDb();
+    db.close();
     throw error;
   }
 
-  closeWritableDb();
+  db.close();
   emitProgress(sender, {
     phase: "ready",
     filePath,
     dbPath,
-    totalBytes: indexSourceStats.size,
-    bytesRead: indexSourceStats.size,
+    totalBytes: sourceStats.size,
+    bytesRead: sourceStats.size,
+    messagesIndexed,
+    reused: false
+  });
+
+  return { dbPath, totalMessages: messagesIndexed, reused: false };
+}
+
+async function ensurePstDatabase(filePath, sender, options = {}) {
+  const sourceStats = await stat(filePath);
+  const dbPath = typeof options?.dbPath === "string" && options.dbPath ? options.dbPath : `${filePath}.sqlite`;
+  const sourceMtimeMs = Math.trunc(sourceStats.mtimeMs);
+
+  emitProgress(sender, {
+    phase: "preparing",
+    filePath,
+    dbPath,
+    totalBytes: sourceStats.size,
+    bytesRead: 0,
+    messagesIndexed: 0
+  });
+
+  if (await isReusableDatabase(dbPath, filePath, sourceStats.size, sourceMtimeMs)) {
+    const totalMessages = countMessages(dbPath);
+    emitProgress(sender, {
+      phase: "ready",
+      filePath,
+      dbPath,
+      totalBytes: sourceStats.size,
+      bytesRead: sourceStats.size,
+      messagesIndexed: totalMessages,
+      reused: true
+    });
+    return { dbPath, totalMessages, reused: true };
+  }
+
+  closeDatabase(dbPath);
+  await removeDbFiles(dbPath);
+  const db = createWritableDatabase(dbPath);
+  const statements = createInsertStatements(db);
+  let messagesIndexed = 0;
+  let transactionOpen = false;
+
+  try {
+    db.exec("BEGIN");
+    transactionOpen = true;
+
+    await walkPstMessages(filePath, {
+      onMessage: async (item, index) => {
+        const record = buildPstIndexRecord(item, index);
+        messagesIndexed = index;
+        insertIndexRecord(statements, {
+          ...record,
+          sourceKind: "pst",
+          byteStart: null,
+          byteEnd: null
+        });
+
+        if (messagesIndexed % BATCH_SIZE === 0) {
+          db.exec("COMMIT");
+          db.exec("BEGIN");
+          await waitForImmediate();
+        }
+      },
+      onProgress: async (progress) => {
+        emitProgress(sender, {
+          phase: "indexing-pst",
+          filePath,
+          dbPath,
+          totalBytes: sourceStats.size,
+          bytesRead: 0,
+          messagesIndexed: Number(progress.messagesIndexed) || messagesIndexed
+        });
+        await waitForImmediate();
+      }
+    });
+
+    db.exec("COMMIT");
+    transactionOpen = false;
+    finalizeDatabase(db, filePath, sourceStats.size, sourceMtimeMs, messagesIndexed);
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Ignore cleanup failures after index errors.
+      }
+    }
+    db.close();
+    throw error;
+  }
+
+  db.close();
+  emitProgress(sender, {
+    phase: "ready",
+    filePath,
+    dbPath,
+    totalBytes: sourceStats.size,
+    bytesRead: sourceStats.size,
     messagesIndexed,
     reused: false
   });
@@ -330,36 +332,28 @@ function getMessageDateBounds(dbPath) {
 }
 
 async function loadMessageById(dbPath, messageId) {
-  const entry = getDatabaseEntry(dbPath);
-  const id = Number.parseInt(String(messageId), 10);
-  if (!Number.isInteger(id) || id <= 0) {
-    return null;
-  }
-
-  const row = entry.getMessage.get(id);
+  const row = getMessageRow(dbPath, messageId);
   if (!row) {
     return null;
   }
 
-  let rawChunk = "";
-  if (entry.getEmbeddedMessageSource) {
-    rawChunk = entry.getEmbeddedMessageSource.get(id)?.raw_chunk || "";
+  const sourcePath = getMetaValue(dbPath, "source_path");
+  if (!sourcePath) {
+    throw new Error("Indexed database is missing source file metadata.");
   }
 
-  if (!rawChunk) {
-    const sourcePath = entry.getMeta.get("source_path")?.value;
-    if (!sourcePath) {
-      throw new Error("Indexed database is missing source file metadata.");
-    }
-    rawChunk = await readUtf8Range(sourcePath, row.byte_start, row.byte_end);
-  }
-
-  const parsed = parseMessageChunk(rawChunk, {
-    index: row.id,
-    includeAttachmentData: true,
-    includeEmlSource: true,
-    includeBodyHtml: true
-  });
+  const parsed =
+    row.source_kind === "pst"
+      ? loadPstMessageByDescriptor(sourcePath, row.source_ref, {
+          index: row.id,
+          includeAttachmentData: "inline"
+        })
+      : parseMessageChunk(await readMessageBuffer(sourcePath, row), {
+          index: row.id,
+          includeAttachmentData: "inline",
+          includeEmlSource: false,
+          includeBodyHtml: true
+        });
 
   if (!parsed) {
     return null;
@@ -377,6 +371,75 @@ async function loadMessageById(dbPath, messageId) {
   };
 }
 
+async function getAttachmentData(dbPath, messageId, attachmentId) {
+  const row = getMessageRow(dbPath, messageId);
+  if (!row) {
+    return null;
+  }
+
+  const sourcePath = getMetaValue(dbPath, "source_path");
+  if (!sourcePath) {
+    return null;
+  }
+
+  if (row.source_kind === "pst") {
+    return getPstAttachmentData(sourcePath, row.source_ref, attachmentId);
+  }
+
+  const parsed = parseMessageChunk(await readMessageBuffer(sourcePath, row), {
+    index: row.id,
+    includeAttachmentData: true,
+    includeEmlSource: false,
+    includeBodyHtml: false
+  });
+  const attachment = (parsed?.attachments || []).find((item) => item.id === attachmentId);
+  if (!attachment || !attachment.base64) {
+    return null;
+  }
+
+  return {
+    fileName: attachment.fileName || "attachment.bin",
+    contentType: attachment.contentType || "application/octet-stream",
+    data: Buffer.from(attachment.base64, "base64")
+  };
+}
+
+async function getMessageEmlBuffer(dbPath, messageId) {
+  const row = getMessageRow(dbPath, messageId);
+  if (!row) {
+    return null;
+  }
+
+  const sourcePath = getMetaValue(dbPath, "source_path");
+  if (!sourcePath) {
+    return null;
+  }
+
+  if (row.source_kind === "pst") {
+    return buildPstEmlBuffer(sourcePath, row.source_ref);
+  }
+
+  return stripMboxEnvelopeFromBuffer(await readMessageBuffer(sourcePath, row));
+}
+
+async function getMessageSourcePreview(dbPath, messageId) {
+  const row = getMessageRow(dbPath, messageId);
+  if (!row) {
+    return "";
+  }
+
+  const sourcePath = getMetaValue(dbPath, "source_path");
+  if (!sourcePath) {
+    return "";
+  }
+
+  if (row.source_kind === "pst") {
+    return getPstSourcePreview(sourcePath, row.source_ref);
+  }
+
+  return stripMboxEnvelopeFromBuffer(await readMessageBuffer(sourcePath, row)).toString("utf8");
+}
+
 function countMessages(dbPath) {
   const entry = getDatabaseEntry(dbPath);
   return entry.countAll.get().count;
@@ -385,7 +448,6 @@ function countMessages(dbPath) {
 async function streamMboxMessages(filePath, onMessage, onProgress) {
   const fileStats = await stat(filePath);
   const totalBytes = fileStats.size;
-
   const input = createReadStream(filePath);
   let carry = Buffer.alloc(0);
   let carryOffset = 0;
@@ -398,6 +460,7 @@ async function streamMboxMessages(filePath, onMessage, onProgress) {
     if (typeof onProgress !== "function") {
       return;
     }
+
     await onProgress({
       bytesRead: Math.min(bytesRead, totalBytes),
       totalBytes,
@@ -409,9 +472,8 @@ async function streamMboxMessages(filePath, onMessage, onProgress) {
     if (currentStartOffset === null) {
       return;
     }
-    const rawChunk = Buffer.concat(currentLines, currentLength).toString("utf8");
     await onMessage({
-      rawChunk,
+      rawChunk: Buffer.concat(currentLines, currentLength),
       byteStart: currentStartOffset,
       byteEnd: endOffset
     });
@@ -501,17 +563,12 @@ async function isReusableDatabase(dbPath, sourcePath, sourceSize, sourceMtimeMs)
   try {
     const entry = getDatabaseEntry(dbPath);
     const readMeta = (key) => entry.getMeta.get(key)?.value || "";
-    const schemaVersion = readMeta("schema_version");
-    const parserVersion = readMeta("parser_version");
-    const storedSourcePath = readMeta("source_path");
-    const storedSourceSize = Number.parseInt(readMeta("source_size"), 10);
-    const storedSourceMtime = Number.parseInt(readMeta("source_mtime_ms"), 10);
     const valid =
-      schemaVersion === SCHEMA_VERSION &&
-      parserVersion === PARSER_VERSION &&
-      storedSourcePath === sourcePath &&
-      storedSourceSize === sourceSize &&
-      storedSourceMtime === sourceMtimeMs;
+      readMeta("schema_version") === SCHEMA_VERSION &&
+      readMeta("parser_version") === PARSER_VERSION &&
+      readMeta("source_path") === sourcePath &&
+      Number.parseInt(readMeta("source_size"), 10) === sourceSize &&
+      Number.parseInt(readMeta("source_mtime_ms"), 10) === sourceMtimeMs;
 
     if (!valid) {
       closeDatabase(dbPath);
@@ -533,17 +590,103 @@ async function getReusableDatabaseInfo(dbPath, sourcePath) {
       return null;
     }
 
-    const entry = getDatabaseEntry(dbPath);
     return {
       dbPath,
       totalMessages: countMessages(dbPath),
       sourceSize: sourceStats.size,
-      sourceMtimeMs,
-      sourceEmbedded: entry.getMeta.get("source_embedded")?.value === "1"
+      sourceMtimeMs
     };
   } catch {
     return null;
   }
+}
+
+function createInsertStatements(db) {
+  return {
+    insertMessage: db.prepare(`
+      INSERT INTO messages (
+        id,
+        source_kind,
+        source_ref,
+        subject,
+        sender,
+        recipient,
+        date_raw,
+        date_ts,
+        snippet,
+        body_text,
+        attachment_names,
+        byte_start,
+        byte_end
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    insertAttachment: db.prepare(`
+      INSERT INTO attachments (
+        message_id,
+        file_name,
+        content_type,
+        size,
+        is_inline,
+        content_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `),
+    insertFts: db.prepare(`
+      INSERT INTO message_fts (
+        rowid,
+        subject,
+        sender,
+        recipient,
+        snippet,
+        body_text,
+        attachment_names
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+  };
+}
+
+function insertIndexRecord(statements, record) {
+  statements.insertMessage.run(
+    record.id,
+    record.sourceKind,
+    record.sourceRef || "",
+    record.subject || "",
+    record.from || "",
+    record.to || "",
+    record.date || "",
+    record.dateTs ?? null,
+    record.snippet || "",
+    record.bodyText || "",
+    record.attachmentNames || "",
+    record.byteStart ?? null,
+    record.byteEnd ?? null
+  );
+
+  statements.insertFts.run(
+    record.id,
+    record.subject || "",
+    record.from || "",
+    record.to || "",
+    record.snippet || "",
+    record.bodyText || "",
+    record.attachmentNames || ""
+  );
+
+  for (const attachment of record.attachments || []) {
+    statements.insertAttachment.run(
+      record.id,
+      attachment.fileName || "",
+      attachment.contentType || "",
+      attachment.size ?? null,
+      attachment.isInline ? 1 : 0,
+      attachment.contentId || ""
+    );
+  }
+}
+
+function finalizeDatabase(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages) {
+  db.exec("ANALYZE");
+  db.exec("INSERT INTO message_fts(message_fts) VALUES ('optimize')");
+  writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages);
 }
 
 async function removeDbFiles(dbPath) {
@@ -573,6 +716,8 @@ function createWritableDatabase(dbPath) {
 
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY,
+      source_kind TEXT NOT NULL DEFAULT 'mbox',
+      source_ref TEXT NOT NULL DEFAULT '',
       subject TEXT NOT NULL DEFAULT '',
       sender TEXT NOT NULL DEFAULT '',
       recipient TEXT NOT NULL DEFAULT '',
@@ -581,8 +726,8 @@ function createWritableDatabase(dbPath) {
       snippet TEXT NOT NULL DEFAULT '',
       body_text TEXT NOT NULL DEFAULT '',
       attachment_names TEXT NOT NULL DEFAULT '',
-      byte_start INTEGER NOT NULL,
-      byte_end INTEGER NOT NULL
+      byte_start INTEGER,
+      byte_end INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS attachments (
@@ -593,11 +738,6 @@ function createWritableDatabase(dbPath) {
       size INTEGER,
       is_inline INTEGER NOT NULL DEFAULT 0,
       content_id TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS message_source (
-      message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-      raw_chunk TEXT NOT NULL
     );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
@@ -614,13 +754,12 @@ function createWritableDatabase(dbPath) {
   `);
   db.exec("DELETE FROM meta");
   db.exec("DELETE FROM attachments");
-  db.exec("DELETE FROM message_source");
   db.exec("DELETE FROM messages");
   db.exec("DELETE FROM message_fts");
   return db;
 }
 
-function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages, options = {}) {
+function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages) {
   const upsert = db.prepare(`
     INSERT INTO meta (key, value)
     VALUES (?, ?)
@@ -631,7 +770,6 @@ function writeMeta(db, sourcePath, sourceSize, sourceMtimeMs, totalMessages, opt
   upsert.run("source_path", sourcePath);
   upsert.run("source_size", String(sourceSize));
   upsert.run("source_mtime_ms", String(sourceMtimeMs));
-  upsert.run("source_embedded", options.sourceEmbedded ? "1" : "0");
   upsert.run("total_messages", String(totalMessages));
   upsert.run("indexed_at", new Date().toISOString());
 }
@@ -644,7 +782,6 @@ function getDatabaseEntry(dbPath) {
 
   const db = new DatabaseClass(dbPath);
   db.exec("PRAGMA foreign_keys=ON");
-  const hasEmbeddedMessageSourceTable = tableExists(db, "message_source");
   const entry = {
     db,
     countAll: db.prepare("SELECT COUNT(*) AS count FROM messages"),
@@ -668,63 +805,11 @@ function getDatabaseEntry(dbPath) {
       ORDER BY ${MESSAGE_LIST_ORDER_SQL}
       LIMIT ? OFFSET ?
     `),
-    countSearch: db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM message_fts
-      WHERE message_fts MATCH ?
-    `),
-    countSearchByDate: db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM message_fts
-      JOIN messages m ON m.id = message_fts.rowid
-      WHERE message_fts MATCH ?
-        AND m.date_ts IS NOT NULL
-        AND m.date_ts BETWEEN ? AND ?
-    `),
-    listSearch: db.prepare(`
-      SELECT
-        m.id,
-        m.subject,
-        m.sender,
-        m.recipient,
-        m.date_raw,
-        m.snippet,
-        CASE WHEN m.attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
-      FROM message_fts
-      JOIN messages m ON m.id = message_fts.rowid
-      WHERE message_fts MATCH ?
-      ORDER BY ${MESSAGE_LIST_ORDER_SQL_ALIASED}
-      LIMIT ? OFFSET ?
-    `),
-    listSearchByDate: db.prepare(`
-      SELECT
-        m.id,
-        m.subject,
-        m.sender,
-        m.recipient,
-        m.date_raw,
-        m.snippet,
-        CASE WHEN m.attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
-      FROM message_fts
-      JOIN messages m ON m.id = message_fts.rowid
-      WHERE message_fts MATCH ?
-        AND m.date_ts IS NOT NULL
-        AND m.date_ts BETWEEN ? AND ?
-      ORDER BY ${MESSAGE_LIST_ORDER_SQL_ALIASED}
-      LIMIT ? OFFSET ?
-    `),
     getMessage: db.prepare(`
-      SELECT id, subject, sender, recipient, date_raw, snippet, byte_start, byte_end
+      SELECT id, source_kind, source_ref, subject, sender, recipient, date_raw, snippet, byte_start, byte_end
       FROM messages
       WHERE id = ?
     `),
-    getEmbeddedMessageSource: hasEmbeddedMessageSourceTable
-      ? db.prepare(`
-          SELECT raw_chunk
-          FROM message_source
-          WHERE message_id = ?
-        `)
-      : null,
     getMeta: db.prepare("SELECT value FROM meta WHERE key = ?"),
     getDateBounds: db.prepare(`
       SELECT
@@ -737,13 +822,6 @@ function getDatabaseEntry(dbPath) {
   };
   DB_CACHE.set(dbPath, entry);
   return entry;
-}
-
-function tableExists(db, tableName) {
-  const row = db
-    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
-    .get(tableName);
-  return Boolean(row?.present);
 }
 
 function closeDatabase(dbPath) {
@@ -760,25 +838,69 @@ function closeDatabase(dbPath) {
   DB_CACHE.delete(dbPath);
 }
 
-async function readUtf8Range(filePath, byteStart, byteEnd) {
+async function readRawRange(filePath, byteStart, byteEnd) {
   const start = Number.parseInt(String(byteStart), 10);
   const end = Number.parseInt(String(byteEnd), 10);
   if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) {
     throw new Error("Invalid message byte offsets in index.");
   }
+
   const length = end - start;
   if (length === 0) {
-    return "";
+    return Buffer.alloc(0);
   }
 
   const buffer = Buffer.alloc(length);
   const handle = await open(filePath, "r");
   try {
     const { bytesRead } = await handle.read(buffer, 0, length, start);
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    return buffer.subarray(0, bytesRead);
   } finally {
     await handle.close();
   }
+}
+
+async function readMessageBuffer(sourcePath, row) {
+  if (row.source_kind !== "mbox") {
+    return Buffer.alloc(0);
+  }
+  return readRawRange(sourcePath, row.byte_start, row.byte_end);
+}
+
+function stripMboxEnvelopeFromBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    return Buffer.alloc(0);
+  }
+
+  if (
+    buffer.length >= 5 &&
+    buffer[0] === 0x46 &&
+    buffer[1] === 0x72 &&
+    buffer[2] === 0x6f &&
+    buffer[3] === 0x6d &&
+    buffer[4] === 0x20
+  ) {
+    const newlineIndex = buffer.indexOf(0x0a);
+    if (newlineIndex !== -1 && newlineIndex + 1 < buffer.length) {
+      return buffer.subarray(newlineIndex + 1);
+    }
+  }
+
+  return buffer;
+}
+
+function getMessageRow(dbPath, messageId) {
+  const entry = getDatabaseEntry(dbPath);
+  const id = Number.parseInt(String(messageId), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return null;
+  }
+
+  return entry.getMessage.get(id) || null;
+}
+
+function getMetaValue(dbPath, key) {
+  return getDatabaseEntry(dbPath).getMeta.get(key)?.value || "";
 }
 
 function buildFtsQuery(input) {
@@ -993,9 +1115,13 @@ async function fileExistsAtPath(filePath) {
 
 module.exports = {
   ensureMboxDatabase,
+  ensurePstDatabase,
   getReusableDatabaseInfo,
   searchMessages,
   loadMessageById,
+  getAttachmentData,
+  getMessageEmlBuffer,
+  getMessageSourcePreview,
   getMessageDateBounds,
   PROGRESS_EVENT
 };

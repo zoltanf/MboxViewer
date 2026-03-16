@@ -1,0 +1,53 @@
+From sender@example.test Mon Mar 10 09:15:00 2025
+From: "Archive Sender" <sender@example.test>
+To: "Mailbox Reader" <reader@example.test>
+Subject: UTF-8 greeting
+Date: Mon, 10 Mar 2025 09:15:00 +0000
+Message-ID: <utf8-greeting@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hello from the UTF-8 fixture.
+This message is intentionally small and boring.
+
+From html@example.test Tue Mar 11 11:45:00 2025
+From: HTML Sender <html@example.test>
+To: "Mailbox Reader" <reader@example.test>
+Subject: HTML with inline image
+Date: Tue, 11 Mar 2025 11:45:00 +0000
+Message-ID: <html-inline@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix-boundary"
+
+--mix-boundary
+Content-Type: multipart/related; boundary="related-boundary"
+
+--related-boundary
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<!doctype html>
+<html>
+  <body>
+    <p>Inline image fixture.</p>
+    <img src=3D"cid:hero-image" />
+    <img src=3D"https://remote.example/tracker.png" />
+  </body>
+</html>
+--related-boundary
+Content-Type: image/png; name="hero.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="hero.png"
+Content-ID: <hero-image>
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+
+qf4AAAAASUVORK5CYII=
+--related-boundary--
+--mix-boundary
+Content-Type: text/plain; name="notes.txt"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="notes.txt"
+
+SGVsbG8gZnJvbSB0aGUgYXR0YWNobWVudCBmaXh0dXJlLgo=
+--mix-boundary--
