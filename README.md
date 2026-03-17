@@ -153,6 +153,14 @@ If you are packaging frequently, be aware that the version in `package.json` and
 
 Release creation can be automated with GitHub Actions through [.github/workflows/release.yml](/Users/zoltanf/Development/MboxViewer/.github/workflows/release.yml).
 
+The quickest path is:
+
+```bash
+./release.sh 1.6
+```
+
+That creates and pushes a tag in the expected release format, then GitHub builds the artifacts and publishes the release for you.
+
 Supported flows:
 
 - GitHub UI: run the `Release` workflow manually from the Actions tab
@@ -168,6 +176,8 @@ Notes:
 - the workflow reuses one shared build stamp across all runners so every platform artifact gets the same version number
 - unsigned builds work with the default GitHub token
 - if you later want signing or notarization, you can add the relevant platform secrets to the workflow
+
+For a short step-by-step guide, see [RELEASING.md](/Users/zoltanf/Development/MboxViewer/RELEASING.md).
 
 ## Repository Structure (high level)
 
