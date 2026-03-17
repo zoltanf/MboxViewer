@@ -1,7 +1,7 @@
 const { readFileSync, writeFileSync } = require("fs");
 const path = require("path");
 
-const workspaceRoot = path.join(__dirname, "..");
+const workspaceRoot = __dirname;
 const packageJsonPath = path.join(workspaceRoot, "package.json");
 const packageLockPath = path.join(workspaceRoot, "package-lock.json");
 
