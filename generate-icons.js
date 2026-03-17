@@ -2,7 +2,7 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const { mkdirSync, copyFileSync, rmSync, existsSync } = require("node:fs");
 const path = require("node:path");
 
-const root = path.resolve(__dirname, "..");
+const root = __dirname;
 const buildDir = path.join(root, "build");
 const svgPath = path.join(root, "assets", "app-icon.svg");
 const basePng = path.join(buildDir, "icon-1024.png");
@@ -10,6 +10,7 @@ const iconPng = path.join(buildDir, "icon.png");
 const iconIco = path.join(buildDir, "icon.ico");
 
 const sizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024];
+const requiredPngs = sizes.map((size) => path.join(buildDir, `icon-${size}.png`));
 
 function hasCommand(name) {
   const result = spawnSync("which", [name], { stdio: "ignore" });
@@ -18,6 +19,22 @@ function hasCommand(name) {
 
 function run(cmd, args) {
   execFileSync(cmd, args, { stdio: "inherit" });
+}
+
+function hasAllPrebuiltIcons() {
+  return [iconPng, iconIco, ...requiredPngs].every((filePath) => existsSync(filePath));
+}
+
+function canGenerateBasePng() {
+  return hasCommand("rsvg-convert") || hasCommand("magick");
+}
+
+function canResizePngs() {
+  return hasCommand("sips") || hasCommand("magick");
+}
+
+function canGenerateIco() {
+  return hasCommand("magick");
 }
 
 function resizePng(input, output, size) {
@@ -63,7 +80,7 @@ function generatePngSet() {
 }
 
 function generateIco() {
-  if (!hasCommand("magick")) {
+  if (!canGenerateIco()) {
     console.warn("Skipping ICO generation: 'magick' not found.");
     return;
   }
@@ -81,6 +98,13 @@ function assertOutputs() {
 }
 
 function main() {
+  if (!canGenerateBasePng() || !canResizePngs() || !canGenerateIco()) {
+    if (hasAllPrebuiltIcons()) {
+      console.warn("Using prebuilt icons from build/ because SVG rasterizer tools are unavailable.");
+      return;
+    }
+  }
+
   rmSync(path.join(buildDir, "icon.icns"), { force: true });
   rmSync(path.join(buildDir, "icon.iconset"), { recursive: true, force: true });
   generateBasePng();
