@@ -149,6 +149,26 @@ Example build version: `1.4.2603131526`
 
 If you are packaging frequently, be aware that the version in `package.json` and `package-lock.json` will change on each build.
 
+## GitHub Releases
+
+Release creation can be automated with GitHub Actions through [.github/workflows/release.yml](/Users/zoltanf/Development/MboxViewer/.github/workflows/release.yml).
+
+Supported flows:
+
+- GitHub UI: run the `Release` workflow manually from the Actions tab
+  - optional `base_version` input in `major.minor` format
+  - builds macOS, Windows, and Linux artifacts
+  - creates a GitHub Release and uploads the generated installers/archives
+- Tag push: push a tag in the format `v<major>.<minor>.<YYMMDDHHmm>`
+  - example: `v1.6.2603172145`
+  - the workflow uses that version directly and publishes the matching release automatically
+
+Notes:
+
+- the workflow reuses one shared build stamp across all runners so every platform artifact gets the same version number
+- unsigned builds work with the default GitHub token
+- if you later want signing or notarization, you can add the relevant platform secrets to the workflow
+
 ## Repository Structure (high level)
 
 - `main.js` - Electron main process + IPC

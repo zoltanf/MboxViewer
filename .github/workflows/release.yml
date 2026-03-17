@@ -1,0 +1,230 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_version:
+        description: "Base version in major.minor format (for example 1.6). Leave empty to reuse package.json major.minor."
+        required: false
+        default: ""
+        type: string
+      draft:
+        description: "Create the GitHub release as a draft"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      base_version: ${{ steps.prepare.outputs.base_version }}
+      build_stamp: ${{ steps.prepare.outputs.build_stamp }}
+      version: ${{ steps.prepare.outputs.version }}
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+      draft: ${{ steps.prepare.outputs.draft }}
+      prerelease: ${{ steps.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_base_version="$(node -p "const parts = require('./package.json').version.split('.'); `${parts[0]}.${parts[1]}`")"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            version="${release_tag#v}"
+            if [[ ! "$version" =~ ^([0-9]+\.[0-9]+)\.([0-9]{10})$ ]]; then
+              echo "Tag '$release_tag' must look like v<major>.<minor>.<YYMMDDHHmm>" >&2
+              exit 1
+            fi
+            base_version="${BASH_REMATCH[1]}"
+            build_stamp="${BASH_REMATCH[2]}"
+            draft="false"
+            prerelease="false"
+          else
+            base_version="${{ inputs.base_version }}"
+            if [[ -z "$base_version" ]]; then
+              base_version="$current_base_version"
+            fi
+            build_stamp="$(date -u +'%y%m%d%H%M')"
+            draft="${{ inputs.draft }}"
+            prerelease="${{ inputs.prerelease }}"
+          fi
+
+          bash scripts/set-base-version.sh "$base_version"
+          MBOX_VIEWER_BUILD_STAMP="$build_stamp" node scripts/set-build-version.js
+          version="$(node -p "require('./package.json').version")"
+          release_tag="v$version"
+
+          {
+            echo "base_version=$base_version"
+            echo "build_stamp=$build_stamp"
+            echo "version=$version"
+            echo "release_tag=$release_tag"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
+          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node scripts/set-build-version.js
+
+      - run: npm ci
+      - run: npm test
+
+  build:
+    runs-on: ${{ matrix.os }}
+    needs:
+      - prepare
+      - verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos
+            build_command: npm run dist:mac
+          - os: windows-2022
+            label: windows
+            build_command: npm run dist:win
+          - os: ubuntu-22.04
+            label: linux
+            build_command: npm run dist:linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
+          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node scripts/set-build-version.js
+
+      - run: npm ci
+
+      - name: Build artifacts
+        run: ${{ matrix.build_command }}
+        env:
+          MBOX_VIEWER_BUILD_STAMP: ${{ needs.prepare.outputs.build_stamp }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          node - <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+
+          const repoRoot = process.cwd();
+          const distDir = path.join(repoRoot, "dist");
+          const outDir = path.join(repoRoot, "release-assets");
+          const releaseFilePattern = /\.(dmg|zip|exe|AppImage|deb|yml|blockmap)$/i;
+
+          if (!fs.existsSync(distDir)) {
+            process.exit(0);
+          }
+
+          for (const entry of fs.readdirSync(distDir, { withFileTypes: true })) {
+            if (!entry.isFile() || !releaseFilePattern.test(entry.name)) {
+              continue;
+            }
+            fs.copyFileSync(path.join(distDir, entry.name), path.join(outDir, entry.name));
+          }
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.label }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_DRAFT: ${{ needs.prepare.outputs.draft }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d release-assets ]] || [[ -z "$(find release-assets -maxdepth 1 -type f -print -quit)" ]]; then
+            echo "No release assets were downloaded." >&2
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            exit 0
+          fi
+
+          args=(
+            release
+            create
+            "$RELEASE_TAG"
+            release-assets/*
+            --title
+            "Mbox Viewer $RELEASE_VERSION"
+            --target
+            "$GITHUB_SHA"
+            --generate-notes
+          )
+
+          if [[ "$RELEASE_DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+
+          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh "${args[@]}"

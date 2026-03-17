@@ -9,7 +9,7 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 const packageLock = JSON.parse(readFileSync(packageLockPath, "utf8"));
 
 const [major = "1", minor = "0"] = String(packageJson.version || "1.0.0").split(".");
-const buildStamp = formatBuildStamp(new Date());
+const buildStamp = normalizeBuildStamp(process.env.MBOX_VIEWER_BUILD_STAMP) || formatBuildStamp(new Date());
 const nextVersion = `${major}.${minor}.${buildStamp}`;
 
 packageJson.version = nextVersion;
@@ -22,6 +22,11 @@ writeJson(packageJsonPath, packageJson);
 writeJson(packageLockPath, packageLock);
 
 console.log(`Updated build version to ${nextVersion}`);
+
+function normalizeBuildStamp(value) {
+  const normalized = String(value || "").trim();
+  return /^[0-9]{10}$/.test(normalized) ? normalized : "";
+}
 
 function formatBuildStamp(date) {
   const year = String(date.getFullYear()).slice(-2);
