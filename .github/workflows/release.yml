@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          current_base_version="$(node -p "const parts = require('./package.json').version.split('.'); `${parts[0]}.${parts[1]}`")"
+          current_base_version="$(node -p 'const parts = require("./package.json").version.split("."); parts[0] + "." + parts[1]')"
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             release_tag="${GITHUB_REF_NAME}"
