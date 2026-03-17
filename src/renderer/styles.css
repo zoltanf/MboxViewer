@@ -1372,6 +1372,127 @@ body.resizing {
   word-break: break-word;
 }
 
+.shortcuts-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 122;
+  display: grid;
+  place-items: center;
+}
+
+.shortcuts-modal[hidden] {
+  display: none;
+}
+
+.shortcuts-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--backdrop);
+}
+
+.shortcuts-dialog {
+  position: relative;
+  width: min(680px, calc(100vw - 40px));
+  max-height: min(84vh, 760px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-modal);
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+}
+
+.shortcuts-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.shortcuts-top h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-strong);
+}
+
+.shortcuts-copy {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.shortcuts-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0;
+  background: var(--control);
+  color: var(--muted-strong);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.shortcuts-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-subtle);
+}
+
+.shortcut-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shortcut-keys kbd {
+  min-width: 28px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: linear-gradient(180deg, var(--panel), var(--control-soft));
+  box-shadow: var(--shadow-sm);
+  color: var(--text-strong);
+  font: inherit;
+  text-align: center;
+}
+
+.shortcut-description {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .shortcut-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
 #statusMessage {
   color: var(--muted);
   white-space: nowrap;

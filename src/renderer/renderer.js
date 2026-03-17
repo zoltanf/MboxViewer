@@ -49,6 +49,8 @@ const externalLinkOpen = document.getElementById("externalLinkOpen");
 const emlSourceModal = document.getElementById("emlSourceModal");
 const emlSourceClose = document.getElementById("emlSourceClose");
 const emlSourceContent = document.getElementById("emlSourceContent");
+const shortcutsModal = document.getElementById("shortcutsModal");
+const shortcutsClose = document.getElementById("shortcutsClose");
 const layout = document.querySelector(".layout");
 const splitter = document.getElementById("splitter");
 
@@ -86,6 +88,7 @@ let bookmarkedOnlyFilterEnabled = false;
 let remoteContentEnabled = false;
 let externalLinkModalOpen = false;
 let emlSourceModalOpen = false;
+let shortcutsModalOpen = false;
 let pendingExternalUrl = "";
 let pendingOpenTiming = null;
 
@@ -169,6 +172,12 @@ if (emlSourceModal) {
 }
 if (emlSourceClose) {
   emlSourceClose.addEventListener("click", () => setEmlSourceModalOpen(false));
+}
+if (shortcutsModal) {
+  shortcutsModal.addEventListener("click", handleShortcutsModalClick);
+}
+if (shortcutsClose) {
+  shortcutsClose.addEventListener("click", () => setShortcutsModalOpen(false));
 }
 
 window.addEventListener("resize", () => {
@@ -668,6 +677,11 @@ function updateTooltipPosition(trigger) {
 
 function handleGlobalKeyDown(event) {
   if (event.key === "Escape") {
+    if (shortcutsModalOpen) {
+      setShortcutsModalOpen(false);
+      return;
+    }
+
     if (emlSourceModalOpen) {
       setEmlSourceModalOpen(false);
       return;
@@ -685,7 +699,7 @@ function handleGlobalKeyDown(event) {
     return;
   }
 
-  if (externalLinkModalOpen || emlSourceModalOpen || event.defaultPrevented) {
+  if (externalLinkModalOpen || emlSourceModalOpen || shortcutsModalOpen || event.defaultPrevented) {
     return;
   }
   if (event.metaKey || event.ctrlKey || event.altKey) {
@@ -720,6 +734,18 @@ function handleGlobalKeyDown(event) {
   }
 
   const key = String(event.key || "");
+  if (key === "F1" || key === "?") {
+    event.preventDefault();
+    setShortcutsModalOpen(true);
+    return;
+  }
+
+  if ((key === "b" || key === "B") && selectedMessageId) {
+    event.preventDefault();
+    void toggleMessageBookmark(selectedMessageId);
+    return;
+  }
+
   const direction = key === "ArrowDown" || key === "j" || key === "J" ? 1 : key === "ArrowUp" || key === "k" || key === "K" ? -1 : 0;
   if (!direction) {
     return;
@@ -963,6 +989,17 @@ function handleEmlSourceModalClick(event) {
   }
 }
 
+function handleShortcutsModalClick(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  if (target.getAttribute("data-close-shortcuts") === "true") {
+    setShortcutsModalOpen(false);
+  }
+}
+
 function setExternalLinkModalOpen(nextOpen) {
   externalLinkModalOpen = Boolean(nextOpen);
   if (externalLinkModal) {
@@ -986,6 +1023,16 @@ function setEmlSourceModalOpen(nextOpen) {
   }
   if (emlSourceModalOpen && emlSourceClose) {
     setTimeout(() => emlSourceClose.focus(), 0);
+  }
+}
+
+function setShortcutsModalOpen(nextOpen) {
+  shortcutsModalOpen = Boolean(nextOpen);
+  if (shortcutsModal) {
+    shortcutsModal.hidden = !shortcutsModalOpen;
+  }
+  if (shortcutsModalOpen && shortcutsClose) {
+    setTimeout(() => shortcutsClose.focus(), 0);
   }
 }
 

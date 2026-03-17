@@ -290,6 +290,66 @@
         <pre id="emlSourceContent" class="eml-source-content"></pre>
       </section>
     </div>
+    <div id="shortcutsModal" class="shortcuts-modal" hidden>
+      <div class="shortcuts-backdrop" data-close-shortcuts="true"></div>
+      <section class="shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+        <div class="shortcuts-top">
+          <div>
+            <h3 id="shortcutsTitle">Keyboard Shortcuts</h3>
+            <p class="shortcuts-copy">Quick actions for navigating messages and common mailbox tasks.</p>
+          </div>
+          <button id="shortcutsClose" class="shortcuts-close" type="button" aria-label="Close keyboard shortcuts">
+            &times;
+          </button>
+        </div>
+        <div class="shortcuts-list" role="list">
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>?</kbd><kbd>F1</kbd></div>
+            <div class="shortcut-description">Show this shortcuts list</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>J</kbd><kbd>↓</kbd></div>
+            <div class="shortcut-description">Select the next message</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>K</kbd><kbd>↑</kbd></div>
+            <div class="shortcut-description">Select the previous message</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Page Down</kbd></div>
+            <div class="shortcut-description">Jump down by one visible page of messages</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Page Up</kbd></div>
+            <div class="shortcut-description">Jump up by one visible page of messages</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Home</kbd></div>
+            <div class="shortcut-description">Jump to the first result</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>End</kbd></div>
+            <div class="shortcut-description">Jump to the last result</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>B</kbd></div>
+            <div class="shortcut-description">Toggle bookmark for the selected message</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Cmd</kbd><span>/</span><kbd>Ctrl</kbd><span>+</span><kbd>O</kbd></div>
+            <div class="shortcut-description">Open an email or mailbox file</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Cmd</kbd><span>/</span><kbd>Ctrl</kbd><span>+</span><kbd>F</kbd></div>
+            <div class="shortcut-description">Focus the text search field</div>
+          </div>
+          <div class="shortcut-row" role="listitem">
+            <div class="shortcut-keys"><kbd>Esc</kbd></div>
+            <div class="shortcut-description">Close the current dialog or toolbar popover</div>
+          </div>
+        </div>
+      </section>
+    </div>
     <footer class="status-bar">
       <div class="status-info">
         <div id="statusMessage">No file loaded.</div>
