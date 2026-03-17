@@ -6,8 +6,11 @@ contextBridge.exposeInMainWorld("mboxApi", {
   openMailboxPath: (payload) => ipcRenderer.invoke("open-mailbox-path", payload),
   consumePendingOpenFile: () => ipcRenderer.invoke("consume-pending-open-file"),
   searchMessages: (payload) => ipcRenderer.invoke("search-messages", payload),
+  updateToolbarMenuState: (payload) => ipcRenderer.invoke("update-toolbar-menu-state", payload),
   getMessage: (payload) => ipcRenderer.invoke("get-message", payload),
+  setMessageBookmarked: (payload) => ipcRenderer.invoke("set-message-bookmarked", payload),
   getMessageSourcePreview: (payload) => ipcRenderer.invoke("get-message-source-preview", payload),
+  exportBookmarkedMbox: (payload) => ipcRenderer.invoke("export-bookmarked-mbox", payload),
   openExternal: (payload) => ipcRenderer.invoke("open-external", payload),
   copyToClipboard: (payload) => ipcRenderer.invoke("copy-to-clipboard", payload),
   openAttachmentPreview: (payload) => ipcRenderer.invoke("open-attachment-preview", payload),
@@ -33,6 +36,17 @@ contextBridge.exposeInMainWorld("mboxApi", {
     ipcRenderer.on("open-mailbox-request", listener);
     return () => {
       ipcRenderer.removeListener("open-mailbox-request", listener);
+    };
+  },
+  onAppMenuCommand: (callback) => {
+    if (typeof callback !== "function") {
+      return () => {};
+    }
+
+    const listener = (_, payload) => callback(payload);
+    ipcRenderer.on("app-menu-command", listener);
+    return () => {
+      ipcRenderer.removeListener("app-menu-command", listener);
     };
   }
 });

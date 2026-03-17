@@ -1,8 +1,8 @@
 const path = require("path");
 const os = require("os");
-const { mkdtemp, readFile, rm, writeFile } = require("fs/promises");
+const { mkdtemp, open, readFile, rm, writeFile } = require("fs/promises");
 const { pathToFileURL } = require("url");
-const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, screen, shell } = require("electron");
 const {
   ensureMboxDatabase,
   ensurePstDatabase,
@@ -11,7 +11,9 @@ const {
   getAttachmentData,
   getMessageEmlBuffer,
   getMessageSourcePreview,
-  getMessageDateBounds
+  getMessageDateBounds,
+  listBookmarkedMessages,
+  setMessageBookmarked
 } = require("./src/mboxStore");
 const { parseMessageChunk } = require("./src/mboxParser");
 const { isPstFilePath } = require("./src/pstConverter");
@@ -20,12 +22,28 @@ const { createOpenTiming } = require("./src/openTiming");
 const DEFAULT_PAGE_SIZE = 200;
 const OPEN_PROGRESS_EVENT = "mbox-index-progress";
 const OPEN_MAILBOX_REQUEST_EVENT = "open-mailbox-request";
+const APP_MENU_COMMAND_EVENT = "app-menu-command";
 const PREVIEW_WINDOW_DEFAULT_BOUNDS = { width: 960, height: 760 };
 const PREVIEW_WINDOW_MIN_BOUNDS = { width: 480, height: 360 };
+const DEFAULT_TOOLBAR_MENU_STATE = Object.freeze({
+  canExportBookmarks: false,
+  canRemoteContent: false,
+  remoteContentEnabled: false,
+  canSearch: false,
+  canDateFilter: false,
+  canFromFilter: false,
+  canToFilter: false,
+  canSubjectFilter: false,
+  canAttachmentFilter: false,
+  attachmentsOnlyEnabled: false,
+  canBookmarkFilter: false,
+  bookmarkedOnlyEnabled: false
+});
 let attachmentPreviewWindow = null;
 let attachmentPreviewWindowState = null;
 let mainWindow = null;
 let pendingOpenFilePath = "";
+let toolbarMenuState = { ...DEFAULT_TOOLBAR_MENU_STATE };
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -57,6 +75,8 @@ function createWindow() {
   window.on("closed", () => {
     if (mainWindow === window) {
       mainWindow = null;
+      toolbarMenuState = { ...DEFAULT_TOOLBAR_MENU_STATE };
+      rebuildApplicationMenu();
     }
   });
 
@@ -66,7 +86,162 @@ function createWindow() {
 
   window.loadFile(path.join(__dirname, "src/renderer/index.html"));
   mainWindow = window;
+  rebuildApplicationMenu();
   return window;
+}
+
+function rebuildApplicationMenu() {
+  if (!app.isReady()) {
+    return;
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildApplicationMenuTemplate()));
+}
+
+function buildApplicationMenuTemplate() {
+  const template = [];
+  const appName = app.name || "Mbox Viewer";
+
+  if (process.platform === "darwin") {
+    template.push({
+      label: appName,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" }
+      ]
+    });
+  }
+
+  template.push(
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "Open Email or Mailbox...",
+          accelerator: "CmdOrCtrl+O",
+          click: () => dispatchAppMenuCommand("open-mailbox")
+        },
+        {
+          label: "Export Bookmarked Messages...",
+          enabled: toolbarMenuState.canExportBookmarks,
+          click: () => dispatchAppMenuCommand("export-bookmarked-mbox")
+        },
+        { type: "separator" },
+        process.platform === "darwin" ? { role: "close" } : { role: "quit" }
+      ]
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" }
+      ]
+    },
+    {
+      label: "Actions",
+      submenu: [
+        {
+          label: "Remote Content",
+          type: "checkbox",
+          enabled: toolbarMenuState.canRemoteContent,
+          checked: toolbarMenuState.remoteContentEnabled,
+          click: () => dispatchAppMenuCommand("toggle-remote-content")
+        }
+      ]
+    },
+    {
+      label: "Filter",
+      submenu: [
+        {
+          label: "Search Text...",
+          accelerator: "CmdOrCtrl+F",
+          enabled: toolbarMenuState.canSearch,
+          click: () => dispatchAppMenuCommand("focus-search")
+        },
+        {
+          label: "Date Range...",
+          enabled: toolbarMenuState.canDateFilter,
+          click: () => dispatchAppMenuCommand("open-date-filter")
+        },
+        {
+          label: "Sender...",
+          enabled: toolbarMenuState.canFromFilter,
+          click: () => dispatchAppMenuCommand("open-from-filter")
+        },
+        {
+          label: "Recipient...",
+          enabled: toolbarMenuState.canToFilter,
+          click: () => dispatchAppMenuCommand("open-to-filter")
+        },
+        {
+          label: "Subject...",
+          enabled: toolbarMenuState.canSubjectFilter,
+          click: () => dispatchAppMenuCommand("open-subject-filter")
+        },
+        { type: "separator" },
+        {
+          label: "Only Messages With Attachments",
+          type: "checkbox",
+          enabled: toolbarMenuState.canAttachmentFilter,
+          checked: toolbarMenuState.attachmentsOnlyEnabled,
+          click: () => dispatchAppMenuCommand("toggle-attachments-filter")
+        },
+        {
+          label: "Only Bookmarked Messages",
+          type: "checkbox",
+          enabled: toolbarMenuState.canBookmarkFilter,
+          checked: toolbarMenuState.bookmarkedOnlyEnabled,
+          click: () => dispatchAppMenuCommand("toggle-bookmarked-filter")
+        }
+      ]
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        ...(process.platform === "darwin" ? [{ type: "separator" }, { role: "front" }] : [{ role: "close" }])
+      ]
+    }
+  );
+
+  return template;
+}
+
+function dispatchAppMenuCommand(command) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(APP_MENU_COMMAND_EVENT, { command });
+}
+
+function normalizeToolbarMenuState(payload) {
+  const next = payload && typeof payload === "object" ? payload : {};
+  return {
+    canExportBookmarks: Boolean(next.canExportBookmarks),
+    canRemoteContent: Boolean(next.canRemoteContent),
+    remoteContentEnabled: Boolean(next.remoteContentEnabled),
+    canSearch: Boolean(next.canSearch),
+    canDateFilter: Boolean(next.canDateFilter),
+    canFromFilter: Boolean(next.canFromFilter),
+    canToFilter: Boolean(next.canToFilter),
+    canSubjectFilter: Boolean(next.canSubjectFilter),
+    canAttachmentFilter: Boolean(next.canAttachmentFilter),
+    attachmentsOnlyEnabled: Boolean(next.attachmentsOnlyEnabled),
+    canBookmarkFilter: Boolean(next.canBookmarkFilter),
+    bookmarkedOnlyEnabled: Boolean(next.bookmarkedOnlyEnabled)
+  };
 }
 
 ipcMain.handle("open-mbox", async (event) => {
@@ -102,6 +277,12 @@ ipcMain.handle("consume-pending-open-file", async () => {
   const filePath = pendingOpenFilePath;
   pendingOpenFilePath = "";
   return { filePath };
+});
+
+ipcMain.handle("update-toolbar-menu-state", async (_, payload) => {
+  toolbarMenuState = normalizeToolbarMenuState(payload);
+  rebuildApplicationMenu();
+  return { ok: true };
 });
 
 async function openMailboxFile(filePath, sender) {
@@ -172,6 +353,7 @@ ipcMain.handle("search-messages", async (_, payload) => {
   const recipientQuery = typeof payload?.recipientQuery === "string" ? payload.recipientQuery : "";
   const subjectQuery = typeof payload?.subjectQuery === "string" ? payload.subjectQuery : "";
   const attachmentsOnly = Boolean(payload?.attachmentsOnly);
+  const bookmarkedOnly = Boolean(payload?.bookmarkedOnly);
 
   if (!dbPath) {
     return { total: 0, offset: 0, limit: 0, messages: [] };
@@ -183,8 +365,21 @@ ipcMain.handle("search-messages", async (_, payload) => {
     senderQuery,
     recipientQuery,
     subjectQuery,
-    attachmentsOnly
+    attachmentsOnly,
+    bookmarkedOnly
   });
+});
+
+ipcMain.handle("set-message-bookmarked", async (_, payload) => {
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const id = payload?.id;
+  const isBookmarked = Boolean(payload?.isBookmarked);
+
+  if (!dbPath || id === undefined || id === null) {
+    return null;
+  }
+
+  return setMessageBookmarked(dbPath, id, isBookmarked);
 });
 
 ipcMain.handle("get-message", async (_, payload) => {
@@ -260,6 +455,54 @@ ipcMain.handle("save-message-eml", async (_, payload) => {
 
   await writeFile(result.filePath, emlBuffer);
   return { canceled: false, filePath: result.filePath };
+});
+
+ipcMain.handle("export-bookmarked-mbox", async (_, payload) => {
+  const dbPath = typeof payload?.dbPath === "string" ? payload.dbPath : "";
+  const sourcePath = typeof payload?.sourcePath === "string" ? payload.sourcePath : "";
+
+  if (!dbPath) {
+    return { canceled: true, error: "No mailbox database is available." };
+  }
+
+  const bookmarkedMessages = listBookmarkedMessages(dbPath);
+  if (!Array.isArray(bookmarkedMessages) || bookmarkedMessages.length === 0) {
+    return { canceled: true, error: "No bookmarked messages available." };
+  }
+
+  const defaultBaseName = buildBookmarkedMboxFileName(sourcePath || dbPath);
+  const result = await dialog.showSaveDialog({
+    title: "Export bookmarked messages",
+    defaultPath: defaultBaseName,
+    filters: [{ name: "Mbox Files", extensions: ["mbox"] }]
+  });
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+
+  const handle = await open(result.filePath, "w");
+  let exportedCount = 0;
+  try {
+    for (const message of bookmarkedMessages) {
+      const emlBuffer = await getMessageEmlBuffer(dbPath, message.id);
+      if (!emlBuffer || emlBuffer.length === 0) {
+        continue;
+      }
+
+      const entryBuffer = buildMboxEntryBuffer(message, emlBuffer);
+      await handle.write(entryBuffer);
+      exportedCount += 1;
+    }
+  } finally {
+    await handle.close();
+  }
+
+  return {
+    canceled: false,
+    filePath: result.filePath,
+    exportedCount
+  };
 });
 
 ipcMain.handle("get-message-source-preview", async (_, payload) => {
@@ -362,6 +605,89 @@ function normalizeEmlFileName(input) {
     .trim();
   const base = stripped || "message";
   return base.toLowerCase().endsWith(".eml") ? base : `${base}.eml`;
+}
+
+function normalizeMboxFileName(input) {
+  const stripped = String(input || "bookmarked-messages")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  const base = stripped || "bookmarked-messages";
+  return base.toLowerCase().endsWith(".mbox") ? base : `${base}.mbox`;
+}
+
+function buildBookmarkedMboxFileName(sourcePath) {
+  const sourceName = path.basename(String(sourcePath || ""), path.extname(String(sourcePath || "")));
+  return normalizeMboxFileName(sourceName ? `${sourceName}-bookmarked` : "bookmarked-messages");
+}
+
+function buildMboxEntryBuffer(message, emlBuffer) {
+  const envelopeFrom = getMboxEnvelopeAddress(message?.from);
+  const envelopeDate = formatMboxEnvelopeDate(message?.date);
+  const headerBuffer = Buffer.from(`From ${envelopeFrom} ${envelopeDate}\n`, "utf8");
+  const escapedMessageBuffer = escapeMessageForMbox(emlBuffer);
+  const needsTrailingNewline =
+    escapedMessageBuffer.length === 0 ||
+    escapedMessageBuffer[escapedMessageBuffer.length - 1] !== 0x0a;
+
+  return Buffer.concat(
+    [
+      headerBuffer,
+      escapedMessageBuffer,
+      needsTrailingNewline ? Buffer.from("\n", "utf8") : Buffer.alloc(0),
+      Buffer.from("\n", "utf8")
+    ].filter((part) => part.length > 0)
+  );
+}
+
+function getMboxEnvelopeAddress(fromValue) {
+  const raw = String(fromValue || "").trim();
+  const address =
+    raw.match(/<([^<>\s]+@[^<>\s]+)>/)?.[1] ||
+    raw.match(/\b([^\s<>@]+@[^\s<>@]+)\b/)?.[1] ||
+    "unknown@mboxviewer.local";
+  return address.replace(/\s+/g, "");
+}
+
+function formatMboxEnvelopeDate(dateValue) {
+  const timestamp = Date.parse(String(dateValue || ""));
+  const date = Number.isFinite(timestamp) ? new Date(timestamp) : new Date();
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const dayName = days[date.getDay()];
+  const monthName = months[date.getMonth()];
+  const dayOfMonth = String(date.getDate()).padStart(2, " ");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  const year = date.getFullYear();
+  return `${dayName} ${monthName} ${dayOfMonth} ${hours}:${minutes}:${seconds} ${year}`;
+}
+
+function escapeMessageForMbox(buffer) {
+  const source = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || "");
+  const parts = [];
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    const newlineIndex = source.indexOf(0x0a, cursor);
+    const lineEnd = newlineIndex === -1 ? source.length : newlineIndex + 1;
+    const line = source.subarray(cursor, lineEnd);
+    if (
+      line.length >= 5 &&
+      line[0] === 0x46 &&
+      line[1] === 0x72 &&
+      line[2] === 0x6f &&
+      line[3] === 0x6d &&
+      line[4] === 0x20
+    ) {
+      parts.push(Buffer.from(">", "utf8"));
+    }
+    parts.push(line);
+    cursor = lineEnd;
+  }
+
+  return Buffer.concat(parts);
 }
 
 function isInternalAppUrl(url) {

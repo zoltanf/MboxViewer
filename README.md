@@ -7,11 +7,11 @@ It is built with Electron and designed for fast local exploration of mailbox dum
 ## What This App Does
 
 - Opens a single `.mbox`, `.eml`, or `.pst` file from your computer
-- Builds a local SQLite sidecar index (`<your-file>.mbox.sqlite`) for fast search and navigation
+- Builds a local SQLite sidecar index (`<your-file>.sqlite`) for fast search and navigation when working with `.mbox` and `.pst` files
 - Shows messages in a two-pane UI:
   - left: sender, subject, date, preview
   - right: full rendered message content
-- Supports message attachments and per-message `.eml` export
+- Supports attachments, bookmarks, per-message `.eml` export, and bookmarked-message `.mbox` export
 
 Everything runs locally on your machine.
 
@@ -21,13 +21,19 @@ Everything runs locally on your machine.
 - Index reuse on later opens when the source file is unchanged
 - Full-text search (subject, sender, recipient, snippet, body, attachment names)
 - Date range filtering with a dual-handle slider (in a filter popover)
+- Field filters for sender, recipient, and subject
+- Attachment-only and bookmark-only filters
+- Persistent message bookmarks stored in the mailbox SQLite index
 - Pagination for large result sets
 - Inline CID image resolution for HTML emails
 - Remote-content blocking toggle for HTML email, disabled by default for privacy
 - Downloadable attachments
 - Direct viewing of standalone `.eml` message files without creating a SQLite index
 - Export selected message as `.eml`
-- PST support via local conversion to a cached sidecar mbox (`<file>.pst.mbox`) before indexing, including message attachments
+- Export all bookmarked messages into a new `.mbox` file
+- Native macOS menu entries for the same actions and filters available in the toolbar
+- Custom toolbar tooltips and grouped controls for easier first-time discovery
+- Direct PST indexing into the SQLite sidecar, including message attachments
 
 ## Security-Oriented Behavior
 
@@ -51,6 +57,8 @@ Everything runs locally on your machine.
 - persistent performance across sessions
 
 The generated index is stored next to your mbox file and reused when valid.
+
+Bookmarks are stored in that SQLite sidecar as well, so they persist when you reopen the same mailbox.
 
 ## Getting Started
 

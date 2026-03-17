@@ -1,9 +1,10 @@
 const openButton = document.getElementById("openButton");
+const exportBookmarksButton = document.getElementById("exportBookmarksButton");
 const remoteContentButton = document.getElementById("remoteContentButton");
 const searchInput = document.getElementById("searchInput");
 const searchWrap = document.getElementById("searchWrap");
 const searchClearButton = document.getElementById("searchClearButton");
-const filterToolsIcon = document.getElementById("filterToolsIcon");
+const filtersGroup = document.getElementById("filtersGroup");
 const dateFilterContainer = document.getElementById("dateFilterContainer");
 const dateFilterButton = document.getElementById("dateFilterButton");
 const dateFilter = document.getElementById("dateFilter");
@@ -25,6 +26,8 @@ const subjectFilterInput = document.getElementById("subjectFilterInput");
 const subjectFilterClearButton = document.getElementById("subjectFilterClearButton");
 const attachmentToggleContainer = document.getElementById("attachmentToggleContainer");
 const attachmentToggleButton = document.getElementById("attachmentToggleButton");
+const bookmarkToggleContainer = document.getElementById("bookmarkToggleContainer");
+const bookmarkToggleButton = document.getElementById("bookmarkToggleButton");
 const dateBoundsLabel = document.getElementById("dateBoundsLabel");
 const dateFromLabel = document.getElementById("dateFromLabel");
 const dateToLabel = document.getElementById("dateToLabel");
@@ -62,6 +65,7 @@ let currentOffset = 0;
 let selectedMessageId = null;
 let currentPageMessages = [];
 let currentStandaloneMessage = null;
+let bookmarkedMessageCount = 0;
 let resultIndexById = new Map();
 let mailItemById = new Map();
 let searchDebounceTimer = null;
@@ -78,6 +82,7 @@ let fromFilterPopoverOpen = false;
 let toFilterPopoverOpen = false;
 let subjectFilterPopoverOpen = false;
 let attachmentsOnlyFilterEnabled = false;
+let bookmarkedOnlyFilterEnabled = false;
 let remoteContentEnabled = false;
 let externalLinkModalOpen = false;
 let emlSourceModalOpen = false;
@@ -85,6 +90,9 @@ let pendingExternalUrl = "";
 let pendingOpenTiming = null;
 
 openButton.addEventListener("click", openMbox);
+if (exportBookmarksButton) {
+  exportBookmarksButton.addEventListener("click", exportBookmarkedMessages);
+}
 if (remoteContentButton) {
   remoteContentButton.addEventListener("click", toggleRemoteContent);
 }
@@ -134,7 +142,12 @@ if (subjectFilterClearButton) {
 if (attachmentToggleButton) {
   attachmentToggleButton.addEventListener("click", toggleAttachmentsOnlyFilter);
 }
+if (bookmarkToggleButton) {
+  bookmarkToggleButton.addEventListener("click", toggleBookmarkedOnlyFilter);
+}
 document.addEventListener("pointerdown", handleDocumentPointerDown);
+document.addEventListener("pointerover", handleTooltipTriggerPointerOver, true);
+document.addEventListener("focusin", handleTooltipTriggerFocusIn);
 document.addEventListener("keydown", handleGlobalKeyDown);
 if (mailListPanel) {
   mailListPanel.addEventListener("scroll", handleMailListScroll, { passive: true });
@@ -173,12 +186,18 @@ const removeOpenMailboxRequestListener = window.mboxApi.onOpenMailboxRequest((pa
   }
   void openMailboxPath(filePath);
 });
+const removeAppMenuCommandListener = window.mboxApi.onAppMenuCommand((payload) => {
+  handleAppMenuCommand(payload?.command);
+});
 window.addEventListener("beforeunload", () => {
   if (typeof removeProgressListener === "function") {
     removeProgressListener();
   }
   if (typeof removeOpenMailboxRequestListener === "function") {
     removeOpenMailboxRequestListener();
+  }
+  if (typeof removeAppMenuCommandListener === "function") {
+    removeAppMenuCommandListener();
   }
 });
 
@@ -187,7 +206,9 @@ updateRemoteContentButtonState();
 updateSearchUiState();
 setSearchVisible(false);
 setTextFiltersVisible(false);
+setExportBookmarksVisible(false);
 setRemoteContentVisible(false);
+publishToolbarMenuState();
 void consumePendingMailboxOpen();
 
 async function openMbox() {
@@ -248,6 +269,7 @@ async function openMailboxRequest(loader) {
       : null;
     setSearchVisible(Boolean(dbPath));
     setTextFiltersVisible(Boolean(dbPath));
+    setExportBookmarksVisible(Boolean(dbPath));
     setRemoteContentVisible(Boolean(dbPath || currentStandaloneMessage));
     currentQuery = "";
     searchInput.value = "";
@@ -258,6 +280,7 @@ async function openMailboxRequest(loader) {
     configureDateFilter(result?.dateRange || null);
 
     applyPageResult(result);
+    await refreshBookmarkedExportState();
     setOpenProgress({ visible: true, indeterminate: false, value: 100 });
     setStatusMessage(`Loaded ${totalMessages} email${totalMessages === 1 ? "" : "s"} from ${mboxPath}`);
     if (selectedMessageId) {
@@ -315,11 +338,53 @@ function updateSearchUiState() {
   }
 }
 
+function getToolbarMenuState() {
+  return {
+    canExportBookmarks: Boolean(exportBookmarksButton && !exportBookmarksButton.hidden && !exportBookmarksButton.disabled),
+    canRemoteContent: Boolean(remoteContentButton && !remoteContentButton.hidden),
+    remoteContentEnabled,
+    canSearch: Boolean(searchWrap && !searchWrap.hidden),
+    canDateFilter: Boolean(dateFilterButton && !dateFilterButton.hidden),
+    canFromFilter: Boolean(fromFilterContainer && !fromFilterContainer.hidden),
+    canToFilter: Boolean(toFilterContainer && !toFilterContainer.hidden),
+    canSubjectFilter: Boolean(subjectFilterContainer && !subjectFilterContainer.hidden),
+    canAttachmentFilter: Boolean(attachmentToggleContainer && !attachmentToggleContainer.hidden),
+    attachmentsOnlyEnabled: attachmentsOnlyFilterEnabled,
+    canBookmarkFilter: Boolean(bookmarkToggleContainer && !bookmarkToggleContainer.hidden),
+    bookmarkedOnlyEnabled: bookmarkedOnlyFilterEnabled
+  };
+}
+
+function publishToolbarMenuState() {
+  if (!window.mboxApi || typeof window.mboxApi.updateToolbarMenuState !== "function") {
+    return;
+  }
+
+  window.mboxApi.updateToolbarMenuState(getToolbarMenuState()).catch((error) => {
+    console.error("Failed to update toolbar menu state.", error);
+  });
+}
+
 function setSearchVisible(visible) {
   if (!searchWrap) {
     return;
   }
   searchWrap.hidden = !visible;
+  publishToolbarMenuState();
+}
+
+function setExportBookmarksVisible(visible) {
+  if (!exportBookmarksButton) {
+    return;
+  }
+
+  exportBookmarksButton.hidden = !visible;
+  if (!visible) {
+    bookmarkedMessageCount = 0;
+    updateExportBookmarksButtonState();
+    return;
+  }
+  publishToolbarMenuState();
 }
 
 function setRemoteContentVisible(visible) {
@@ -327,6 +392,7 @@ function setRemoteContentVisible(visible) {
     return;
   }
   remoteContentButton.hidden = !visible;
+  publishToolbarMenuState();
 }
 
 function toggleRemoteContent() {
@@ -342,6 +408,157 @@ function toggleRemoteContent() {
   }
 }
 
+function updateExportBookmarksButtonState() {
+  if (!exportBookmarksButton) {
+    return;
+  }
+
+  const enabled = Boolean(dbPath) && bookmarkedMessageCount > 0;
+  exportBookmarksButton.disabled = !enabled;
+  if (enabled) {
+    exportBookmarksButton.dataset.tooltip = `Save ${bookmarkedMessageCount} bookmarked message${
+      bookmarkedMessageCount === 1 ? "" : "s"
+    } to a new .mbox file`;
+    return;
+  }
+
+  exportBookmarksButton.dataset.tooltip = dbPath
+    ? "Export is unavailable because there are no bookmarked messages yet."
+    : "Export is unavailable until a mailbox is open.";
+  publishToolbarMenuState();
+}
+
+async function refreshBookmarkedExportState() {
+  if (!dbPath) {
+    bookmarkedMessageCount = 0;
+    updateExportBookmarksButtonState();
+    return;
+  }
+
+  try {
+    const page = await window.mboxApi.searchMessages({
+      dbPath,
+      query: "",
+      limit: 1,
+      offset: 0,
+      bookmarkedOnly: true
+    });
+    bookmarkedMessageCount = Number.isInteger(page?.total) ? page.total : 0;
+  } catch (error) {
+    bookmarkedMessageCount = 0;
+    console.error("Failed to refresh bookmarked export state.", error);
+  }
+
+  updateExportBookmarksButtonState();
+}
+
+async function exportBookmarkedMessages() {
+  if (!dbPath || bookmarkedMessageCount <= 0) {
+    setStatusMessage("No bookmarked messages to export.");
+    return;
+  }
+
+  setStatusMessage("Exporting bookmarked messages...");
+  try {
+    const result = await window.mboxApi.exportBookmarkedMbox({
+      dbPath,
+      sourcePath: mboxPath
+    });
+
+    if (!result || result.canceled) {
+      setStatusMessage(result?.error || "Export cancelled.");
+      return;
+    }
+
+    setStatusMessage(
+      `Exported ${result.exportedCount || bookmarkedMessageCount} bookmarked message${
+        (result.exportedCount || bookmarkedMessageCount) === 1 ? "" : "s"
+      } to ${result.filePath}`
+    );
+  } catch (error) {
+    setStatusMessage("Failed to export bookmarked messages.");
+    console.error(error);
+  }
+}
+
+function handleAppMenuCommand(command) {
+  const value = String(command || "");
+  if (value === "open-mailbox") {
+    void openMbox();
+    return;
+  }
+  if (value === "export-bookmarked-mbox") {
+    void exportBookmarkedMessages();
+    return;
+  }
+  if (value === "toggle-remote-content") {
+    if (remoteContentButton && !remoteContentButton.hidden) {
+      toggleRemoteContent();
+    }
+    return;
+  }
+  if (value === "focus-search") {
+    focusSearchFromMenu();
+    return;
+  }
+  if (value === "open-date-filter") {
+    openDateFilterFromMenu();
+    return;
+  }
+  if (value === "open-from-filter") {
+    openTextFilterFromMenu("from");
+    return;
+  }
+  if (value === "open-to-filter") {
+    openTextFilterFromMenu("to");
+    return;
+  }
+  if (value === "open-subject-filter") {
+    openTextFilterFromMenu("subject");
+    return;
+  }
+  if (value === "toggle-attachments-filter") {
+    if (attachmentToggleButton && !attachmentToggleButton.hidden) {
+      toggleAttachmentsOnlyFilter();
+    }
+    return;
+  }
+  if (value === "toggle-bookmarked-filter") {
+    if (bookmarkToggleButton && !bookmarkToggleButton.hidden) {
+      toggleBookmarkedOnlyFilter();
+    }
+  }
+}
+
+function focusSearchFromMenu() {
+  if (!searchWrap || searchWrap.hidden || !searchInput) {
+    return;
+  }
+
+  searchInput.focus();
+  searchInput.select();
+}
+
+function openDateFilterFromMenu() {
+  if (!dateFilterButton || dateFilterButton.hidden) {
+    return;
+  }
+
+  closeTextFilterPopovers();
+  setDateFilterPopoverOpen(true);
+}
+
+function openTextFilterFromMenu(filterKey) {
+  const config = getTextFilterConfig(filterKey);
+  if (!config?.button || config.button.hidden) {
+    return;
+  }
+
+  setDateFilterPopoverOpen(false);
+  closeTextFilterPopovers();
+  setTextFilterPopoverOpen(filterKey, true);
+}
+
 function updateRemoteContentButtonState() {
   if (!remoteContentButton) {
     return;
@@ -353,7 +570,10 @@ function updateRemoteContentButtonState() {
     "aria-label",
     remoteContentEnabled ? "Remote content enabled" : "Remote content blocked"
   );
-  remoteContentButton.title = remoteContentEnabled ? "Remote content enabled" : "Remote content blocked";
+  remoteContentButton.dataset.tooltip = remoteContentEnabled
+    ? "Remote content is enabled. Click to block external images and linked content."
+    : "Remote content is blocked. Click to allow external images and linked content.";
+  publishToolbarMenuState();
 }
 
 function onDateFilterButtonClick() {
@@ -381,6 +601,69 @@ function handleDocumentPointerDown(event) {
     return;
   }
   closeAllToolbarPopovers();
+}
+
+function handleTooltipTriggerPointerOver(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  const trigger = target.closest("[data-tooltip]");
+  if (!(trigger instanceof HTMLElement)) {
+    return;
+  }
+
+  updateTooltipPosition(trigger);
+}
+
+function handleTooltipTriggerFocusIn(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  const trigger = target.closest("[data-tooltip]");
+  if (!(trigger instanceof HTMLElement)) {
+    return;
+  }
+
+  updateTooltipPosition(trigger);
+}
+
+function updateTooltipPosition(trigger) {
+  const tooltipText = String(trigger.dataset.tooltip || "").trim();
+  if (!tooltipText) {
+    delete trigger.dataset.tooltipPosition;
+    return;
+  }
+
+  if (!trigger.dataset.tooltipPreferredAlign && trigger.dataset.tooltipAlign) {
+    trigger.dataset.tooltipPreferredAlign = trigger.dataset.tooltipAlign;
+  }
+
+  const preferred = trigger.dataset.tooltipPreferredAlign === "end" ? "end" : "start";
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const margin = 16;
+  const estimatedWidth = Math.min(260, Math.max(168, Math.ceil(tooltipText.length * 6.8 + 36)));
+  const rect = trigger.getBoundingClientRect();
+  const canFitStart = rect.left + estimatedWidth <= viewportWidth - margin;
+  const canFitEnd = rect.right - estimatedWidth >= margin;
+
+  let resolvedPosition = preferred;
+  if (preferred === "end" && !canFitEnd && canFitStart) {
+    resolvedPosition = "start";
+  } else if (preferred === "start" && !canFitStart && canFitEnd) {
+    resolvedPosition = "end";
+  } else if (!canFitStart && canFitEnd) {
+    resolvedPosition = "end";
+  } else if (!canFitEnd && canFitStart) {
+    resolvedPosition = "start";
+  } else if (!canFitStart && !canFitEnd) {
+    resolvedPosition = rect.left < viewportWidth / 2 ? "start" : "end";
+  }
+
+  trigger.dataset.tooltipPosition = resolvedPosition;
 }
 
 function handleGlobalKeyDown(event) {
@@ -994,7 +1277,8 @@ async function loadPage(options = {}) {
       senderQuery: textFiltersPayload?.senderQuery ?? null,
       recipientQuery: textFiltersPayload?.recipientQuery ?? null,
       subjectQuery: textFiltersPayload?.subjectQuery ?? null,
-      attachmentsOnly: textFiltersPayload?.attachmentsOnly ?? false
+      attachmentsOnly: textFiltersPayload?.attachmentsOnly ?? false,
+      bookmarkedOnly: textFiltersPayload?.bookmarkedOnly ?? false
     });
 
     if (token !== requestToken) {
@@ -1215,10 +1499,81 @@ function appendMailListItems(messages) {
   }
 }
 
+function getBookmarkIconMarkup(active) {
+  return active
+    ? `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M7 4.75A1.75 1.75 0 0 1 8.75 3h6.5A1.75 1.75 0 0 1 17 4.75v15.03a.75.75 0 0 1-1.18.61L12 17.62l-3.82 2.77A.75.75 0 0 1 7 19.78V4.75Z"
+          fill="currentColor"
+        ></path>
+      </svg>
+    `
+    : `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M7 4.75A1.75 1.75 0 0 1 8.75 3h6.5A1.75 1.75 0 0 1 17 4.75v15.03a.75.75 0 0 1-1.18.61L12 17.62l-3.82 2.77A.75.75 0 0 1 7 19.78V4.75Z"
+          fill="none"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="1.8"
+        ></path>
+      </svg>
+    `;
+}
+
+function syncMailBookmarkButton(item, isBookmarked) {
+  if (!item) {
+    return;
+  }
+
+  const bookmarkButton = item.querySelector(".mail-bookmark-button");
+  if (!(bookmarkButton instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  bookmarkButton.classList.toggle("active", isBookmarked);
+  bookmarkButton.setAttribute("aria-pressed", isBookmarked ? "true" : "false");
+  bookmarkButton.setAttribute("aria-label", isBookmarked ? "Remove bookmark" : "Add bookmark");
+  bookmarkButton.innerHTML = getBookmarkIconMarkup(isBookmarked);
+}
+
+function applyMessageBookmarkState(messageId, isBookmarked) {
+  const targetId = Number(messageId);
+  currentPageMessages = currentPageMessages.map((message) =>
+    message.id === targetId
+      ? {
+          ...message,
+          isBookmarked
+        }
+      : message
+  );
+
+  if (currentStandaloneMessage && currentStandaloneMessage.id === targetId) {
+    currentStandaloneMessage = {
+      ...currentStandaloneMessage,
+      isBookmarked
+    };
+  }
+
+  syncMailBookmarkButton(mailItemById.get(targetId), isBookmarked);
+}
+
 function createMailItem(msg) {
   const sender = getSenderDisplay(msg.from || "Unknown sender");
   const dateLabel = formatListDate(msg.date || "");
   const snippet = compactText(msg.snippet || "");
+  const bookmarkButtonMarkup = `
+    <button
+      class="mail-bookmark-button${msg.isBookmarked ? " active" : ""}"
+      type="button"
+      aria-label="${msg.isBookmarked ? "Remove bookmark" : "Add bookmark"}"
+      aria-pressed="${msg.isBookmarked ? "true" : "false"}"
+    >
+      ${getBookmarkIconMarkup(Boolean(msg.isBookmarked))}
+    </button>
+  `;
   const attachmentBadge = msg.hasAttachments
     ? `
       <span class="mail-attachment-indicator" aria-label="Has attachment" title="Has attachment">
@@ -1236,10 +1591,13 @@ function createMailItem(msg) {
   item.dataset.messageId = String(msg.id);
   item.innerHTML = `
     <div class="mail-row-top">
-      <div class="mail-from" title="${escapeHtml(msg.from || "Unknown sender")}">${escapeHtml(sender)}</div>
-      <div class="mail-date-wrap">
+      <div class="mail-from-wrap">
         ${attachmentBadge}
+        <div class="mail-from" title="${escapeHtml(msg.from || "Unknown sender")}">${escapeHtml(sender)}</div>
+      </div>
+      <div class="mail-date-wrap">
         <span class="mail-date">${escapeHtml(dateLabel)}</span>
+        ${bookmarkButtonMarkup}
       </div>
     </div>
     <p class="mail-subject-line">${escapeHtml(msg.subject || "(No Subject)")}</p>
@@ -1250,6 +1608,14 @@ function createMailItem(msg) {
     setSelectedMessage(msg.id);
     void loadSelectedMessage();
   });
+
+  const bookmarkButton = item.querySelector(".mail-bookmark-button");
+  if (bookmarkButton) {
+    bookmarkButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void toggleMessageBookmark(msg.id);
+    });
+  }
 
   mailItemById.set(msg.id, item);
   return item;
@@ -1357,7 +1723,13 @@ function renderMessage(msg) {
       <div class="message-header-top">
         <h2>${escapeHtml(msg.subject || "(No Subject)")}</h2>
         <div class="message-header-actions">
-          <button id="previewEmlButton" class="message-preview-eml" type="button" aria-label="Preview original EML source" title="Preview original EML source">
+          <button
+            id="previewEmlButton"
+            class="message-preview-eml"
+            type="button"
+            aria-label="Preview original EML source"
+            data-tooltip="Preview the raw EML source for this message"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
                 d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7.88a2.5 2.5 0 0 1 1.77.73l3.12 3.12A2.5 2.5 0 0 1 20 8.62V18.5A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm2.5-.5a.5.5 0 0 0-.5.5v13a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V9h-3a2 2 0 0 1-2-2V5H6.5Zm8.5.41V7h1.59L15 5.41ZM8 11a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Z"
@@ -1365,7 +1737,14 @@ function renderMessage(msg) {
               ></path>
             </svg>
           </button>
-          <button id="downloadEmlButton" class="message-download-eml" type="button" aria-label="Download message as EML" title="Download message as EML">
+          <button
+            id="downloadEmlButton"
+            class="message-download-eml"
+            type="button"
+            aria-label="Download message as EML"
+            data-tooltip="Save this message as an .eml file"
+            data-tooltip-align="end"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path
                 d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.29a1 1 0 1 1 1.4 1.41l-4 3.99a1 1 0 0 1-1.4 0l-4-3.99a1 1 0 1 1 1.4-1.41L11 12.59V4a1 1 0 0 1 1-1Zm-7 13a1 1 0 0 1 1 1v1.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V17a1 1 0 1 1 2 0v1.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5V17a1 1 0 0 1 1-1Z"
@@ -1549,6 +1928,7 @@ function configureDateFilter(range) {
   }
   setDateFilterPopoverOpen(false);
   updateDateFilterButtonState();
+  publishToolbarMenuState();
 }
 
 function resetDateFilter() {
@@ -1584,6 +1964,7 @@ function resetDateFilter() {
     dateRangeFill.style.width = "100%";
   }
   updateDateFilterButtonState();
+  publishToolbarMenuState();
 }
 
 function resetTextFilters() {
@@ -1597,6 +1978,7 @@ function resetTextFilters() {
     subjectFilterInput.value = "";
   }
   attachmentsOnlyFilterEnabled = false;
+  bookmarkedOnlyFilterEnabled = false;
   closeTextFilterPopovers();
   updateTextFilterButtonState();
   updateTextFilterClearButtons();
@@ -1721,6 +2103,14 @@ function updateTextFilterButtonState() {
     attachmentToggleButton.classList.toggle("active", attachmentsOnlyFilterEnabled);
     attachmentToggleButton.setAttribute("aria-pressed", attachmentsOnlyFilterEnabled ? "true" : "false");
   }
+  if (bookmarkToggleButton) {
+    bookmarkToggleButton.classList.toggle("active", bookmarkedOnlyFilterEnabled);
+    bookmarkToggleButton.setAttribute("aria-pressed", bookmarkedOnlyFilterEnabled ? "true" : "false");
+    bookmarkToggleButton.dataset.tooltip = bookmarkedOnlyFilterEnabled
+      ? "Showing bookmarked messages only. Click to show all messages."
+      : "Only show bookmarked messages";
+  }
+  publishToolbarMenuState();
 }
 
 function updateTextFilterClearButtons() {
@@ -1754,7 +2144,7 @@ function getActiveTextFiltersPayload() {
   const recipientQuery = String(toFilterInput?.value || "").trim();
   const subjectQuery = String(subjectFilterInput?.value || "").trim();
 
-  if (!senderQuery && !recipientQuery && !subjectQuery && !attachmentsOnlyFilterEnabled) {
+  if (!senderQuery && !recipientQuery && !subjectQuery && !attachmentsOnlyFilterEnabled && !bookmarkedOnlyFilterEnabled) {
     return null;
   }
 
@@ -1762,7 +2152,8 @@ function getActiveTextFiltersPayload() {
     senderQuery: senderQuery || null,
     recipientQuery: recipientQuery || null,
     subjectQuery: subjectQuery || null,
-    attachmentsOnly: attachmentsOnlyFilterEnabled
+    attachmentsOnly: attachmentsOnlyFilterEnabled,
+    bookmarkedOnly: bookmarkedOnlyFilterEnabled
   };
 }
 
@@ -1802,10 +2193,16 @@ function getTextFilterConfig(filterKey) {
 }
 
 function setTextFiltersVisible(visible) {
-  if (filterToolsIcon) {
-    filterToolsIcon.hidden = !visible;
+  if (filtersGroup) {
+    filtersGroup.hidden = !visible;
   }
-  for (const element of [fromFilterContainer, toFilterContainer, subjectFilterContainer, attachmentToggleContainer]) {
+  for (const element of [
+    fromFilterContainer,
+    toFilterContainer,
+    subjectFilterContainer,
+    attachmentToggleContainer,
+    bookmarkToggleContainer
+  ]) {
     if (element) {
       element.hidden = !visible;
     }
@@ -1816,6 +2213,7 @@ function setTextFiltersVisible(visible) {
     updateTextFilterButtonState();
     updateTextFilterClearButtons();
   }
+  publishToolbarMenuState();
 }
 
 function toggleAttachmentsOnlyFilter() {
@@ -1823,6 +2221,53 @@ function toggleAttachmentsOnlyFilter() {
   updateTextFilterButtonState();
   currentOffset = 0;
   scheduleLoadPage();
+}
+
+function toggleBookmarkedOnlyFilter() {
+  bookmarkedOnlyFilterEnabled = !bookmarkedOnlyFilterEnabled;
+  updateTextFilterButtonState();
+  currentOffset = 0;
+  scheduleLoadPage();
+}
+
+async function toggleMessageBookmark(messageId) {
+  if (!dbPath) {
+    return;
+  }
+
+  const existing = currentPageMessages.find((message) => message.id === messageId);
+  if (!existing) {
+    return;
+  }
+
+  const nextBookmarked = !Boolean(existing.isBookmarked);
+  try {
+    const result = await window.mboxApi.setMessageBookmarked({
+      dbPath,
+      id: messageId,
+      isBookmarked: nextBookmarked
+    });
+    if (!result) {
+      setStatusMessage("Could not update bookmark.");
+      return;
+    }
+
+    applyMessageBookmarkState(messageId, result.isBookmarked);
+    await refreshBookmarkedExportState();
+
+    if (bookmarkedOnlyFilterEnabled && !result.isBookmarked) {
+      if (currentPageMessages.length === 1 && currentOffset > 0) {
+        currentOffset = Math.max(0, currentOffset - PAGE_SIZE);
+      }
+      await loadPage();
+      return;
+    }
+
+    setStatusMessage(result.isBookmarked ? "Message bookmarked." : "Bookmark removed.");
+  } catch (error) {
+    setStatusMessage("Could not update bookmark.");
+    console.error(error);
+  }
 }
 
 function getActiveDateFilterPayload() {

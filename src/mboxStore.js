@@ -11,7 +11,7 @@ const {
   getPstSourcePreview
 } = require("./pstConverter");
 
-const SCHEMA_VERSION = "3";
+const SCHEMA_VERSION = "4";
 const PARSER_VERSION = "2";
 const PROGRESS_EVENT = "mbox-index-progress";
 const DB_CACHE = new Map();
@@ -311,6 +311,7 @@ function searchMessages(dbPath, queryInput, limitInput, offsetInput, filtersInpu
     date: row.date_raw || "",
     snippet: row.snippet || "",
     hasAttachments: Boolean(row.has_attachments),
+    isBookmarked: Boolean(row.is_bookmarked),
     resultIndex: offset + index + 1
   }));
 
@@ -367,6 +368,7 @@ async function loadMessageById(dbPath, messageId) {
     to: parsed.to || row.recipient || "",
     date: parsed.date || row.date_raw || "",
     snippet: parsed.snippet || row.snippet || "",
+    isBookmarked: Boolean(row.is_bookmarked),
     resultIndex: null
   };
 }
@@ -443,6 +445,39 @@ async function getMessageSourcePreview(dbPath, messageId) {
 function countMessages(dbPath) {
   const entry = getDatabaseEntry(dbPath);
   return entry.countAll.get().count;
+}
+
+function listBookmarkedMessages(dbPath) {
+  const entry = getDatabaseEntry(dbPath);
+  return entry.listBookmarked.all().map((row) => ({
+    id: row.id,
+    from: row.sender || "",
+    date: row.date_raw || ""
+  }));
+}
+
+function setMessageBookmarked(dbPath, messageId, bookmarkedInput) {
+  const entry = getDatabaseEntry(dbPath);
+  const id = Number.parseInt(String(messageId), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return null;
+  }
+
+  const isBookmarked = bookmarkedInput ? 1 : 0;
+  const result = entry.setBookmarked.run(isBookmarked, id);
+  if (!result || result.changes === 0) {
+    return null;
+  }
+
+  const row = entry.getBookmarkState.get(id);
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    isBookmarked: Boolean(row.is_bookmarked)
+  };
 }
 
 async function streamMboxMessages(filePath, onMessage, onProgress) {
@@ -563,8 +598,11 @@ async function isReusableDatabase(dbPath, sourcePath, sourceSize, sourceMtimeMs)
   try {
     const entry = getDatabaseEntry(dbPath);
     const readMeta = (key) => entry.getMeta.get(key)?.value || "";
+    const schemaVersion = Number.parseInt(readMeta("schema_version"), 10);
     const valid =
-      readMeta("schema_version") === SCHEMA_VERSION &&
+      Number.isFinite(schemaVersion) &&
+      schemaVersion >= 3 &&
+      schemaVersion <= Number.parseInt(SCHEMA_VERSION, 10) &&
       readMeta("parser_version") === PARSER_VERSION &&
       readMeta("source_path") === sourcePath &&
       Number.parseInt(readMeta("source_size"), 10) === sourceSize &&
@@ -726,6 +764,7 @@ function createWritableDatabase(dbPath) {
       snippet TEXT NOT NULL DEFAULT '',
       body_text TEXT NOT NULL DEFAULT '',
       attachment_names TEXT NOT NULL DEFAULT '',
+      is_bookmarked INTEGER NOT NULL DEFAULT 0,
       byte_start INTEGER,
       byte_end INTEGER
     );
@@ -750,8 +789,8 @@ function createWritableDatabase(dbPath) {
       tokenize='unicode61 remove_diacritics 2'
     );
 
-    CREATE INDEX IF NOT EXISTS idx_messages_date_ts ON messages(date_ts);
   `);
+  ensureDatabaseSchema(db);
   db.exec("DELETE FROM meta");
   db.exec("DELETE FROM attachments");
   db.exec("DELETE FROM messages");
@@ -782,6 +821,7 @@ function getDatabaseEntry(dbPath) {
 
   const db = new DatabaseClass(dbPath);
   db.exec("PRAGMA foreign_keys=ON");
+  ensureDatabaseSchema(db);
   const entry = {
     db,
     countAll: db.prepare("SELECT COUNT(*) AS count FROM messages"),
@@ -792,13 +832,29 @@ function getDatabaseEntry(dbPath) {
         AND date_ts BETWEEN ? AND ?
     `),
     listAll: db.prepare(`
-      SELECT id, subject, sender, recipient, date_raw, snippet, CASE WHEN attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
+      SELECT
+        id,
+        subject,
+        sender,
+        recipient,
+        date_raw,
+        snippet,
+        is_bookmarked,
+        CASE WHEN attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
       FROM messages
       ORDER BY ${MESSAGE_LIST_ORDER_SQL}
       LIMIT ? OFFSET ?
     `),
     listAllByDate: db.prepare(`
-      SELECT id, subject, sender, recipient, date_raw, snippet, CASE WHEN attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
+      SELECT
+        id,
+        subject,
+        sender,
+        recipient,
+        date_raw,
+        snippet,
+        is_bookmarked,
+        CASE WHEN attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
       FROM messages
       WHERE date_ts IS NOT NULL
         AND date_ts BETWEEN ? AND ?
@@ -806,8 +862,24 @@ function getDatabaseEntry(dbPath) {
       LIMIT ? OFFSET ?
     `),
     getMessage: db.prepare(`
-      SELECT id, source_kind, source_ref, subject, sender, recipient, date_raw, snippet, byte_start, byte_end
+      SELECT id, source_kind, source_ref, subject, sender, recipient, date_raw, snippet, is_bookmarked, byte_start, byte_end
       FROM messages
+      WHERE id = ?
+    `),
+    getBookmarkState: db.prepare(`
+      SELECT id, is_bookmarked
+      FROM messages
+      WHERE id = ?
+    `),
+    listBookmarked: db.prepare(`
+      SELECT id, sender, date_raw
+      FROM messages
+      WHERE is_bookmarked = 1
+      ORDER BY ${MESSAGE_LIST_ORDER_SQL}
+    `),
+    setBookmarked: db.prepare(`
+      UPDATE messages
+      SET is_bookmarked = ?
       WHERE id = ?
     `),
     getMeta: db.prepare("SELECT value FROM meta WHERE key = ?"),
@@ -822,6 +894,47 @@ function getDatabaseEntry(dbPath) {
   };
   DB_CACHE.set(dbPath, entry);
   return entry;
+}
+
+function ensureDatabaseSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY,
+      source_kind TEXT NOT NULL DEFAULT 'mbox',
+      source_ref TEXT NOT NULL DEFAULT '',
+      subject TEXT NOT NULL DEFAULT '',
+      sender TEXT NOT NULL DEFAULT '',
+      recipient TEXT NOT NULL DEFAULT '',
+      date_raw TEXT NOT NULL DEFAULT '',
+      date_ts INTEGER,
+      snippet TEXT NOT NULL DEFAULT '',
+      body_text TEXT NOT NULL DEFAULT '',
+      attachment_names TEXT NOT NULL DEFAULT '',
+      is_bookmarked INTEGER NOT NULL DEFAULT 0,
+      byte_start INTEGER,
+      byte_end INTEGER
+    );
+  `);
+
+  const columns = db.prepare("PRAGMA table_info(messages)").all();
+  if (!columns.some((column) => column && column.name === "is_bookmarked")) {
+    db.exec("ALTER TABLE messages ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0");
+  }
+
+  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_date_ts ON messages(date_ts)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_bookmarked ON messages(is_bookmarked)");
+
+  const upsert = db.prepare(`
+    INSERT INTO meta (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `);
+  upsert.run("schema_version", SCHEMA_VERSION);
 }
 
 function closeDatabase(dbPath) {
@@ -936,6 +1049,7 @@ function buildMessageSearchSpec({ query, dateRange, fieldFilters }) {
   const recipientQuery = fieldFilters?.recipientQuery || "";
   const subjectQuery = fieldFilters?.subjectQuery || "";
   const attachmentsOnly = Boolean(fieldFilters?.attachmentsOnly);
+  const bookmarkedOnly = Boolean(fieldFilters?.bookmarkedOnly);
 
   const fromSql = hasFtsQuery
     ? "FROM message_fts JOIN messages m ON m.id = message_fts.rowid"
@@ -971,6 +1085,10 @@ function buildMessageSearchSpec({ query, dateRange, fieldFilters }) {
     where.push("m.attachment_names != ''");
   }
 
+  if (bookmarkedOnly) {
+    where.push("m.is_bookmarked = 1");
+  }
+
   const whereSql = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
   const orderSql = ` ORDER BY ${MESSAGE_LIST_ORDER_SQL_ALIASED}`;
 
@@ -985,6 +1103,7 @@ function buildMessageSearchSpec({ query, dateRange, fieldFilters }) {
         m.recipient,
         m.date_raw,
         m.snippet,
+        m.is_bookmarked,
         CASE WHEN m.attachment_names != '' THEN 1 ELSE 0 END AS has_attachments
       ${fromSql}${whereSql}${orderSql}
       LIMIT ? OFFSET ?
@@ -1019,8 +1138,9 @@ function normalizeFieldFilters(filtersInput) {
   const recipientQuery = normalizeSearchFilterValue(filtersInput?.recipientQuery);
   const subjectQuery = normalizeSearchFilterValue(filtersInput?.subjectQuery);
   const attachmentsOnly = Boolean(filtersInput?.attachmentsOnly);
+  const bookmarkedOnly = Boolean(filtersInput?.bookmarkedOnly);
 
-  if (!senderQuery && !recipientQuery && !subjectQuery && !attachmentsOnly) {
+  if (!senderQuery && !recipientQuery && !subjectQuery && !attachmentsOnly && !bookmarkedOnly) {
     return null;
   }
 
@@ -1028,7 +1148,8 @@ function normalizeFieldFilters(filtersInput) {
     senderQuery,
     recipientQuery,
     subjectQuery,
-    attachmentsOnly
+    attachmentsOnly,
+    bookmarkedOnly
   };
 }
 
@@ -1123,5 +1244,7 @@ module.exports = {
   getMessageEmlBuffer,
   getMessageSourcePreview,
   getMessageDateBounds,
+  listBookmarkedMessages,
+  setMessageBookmarked,
   PROGRESS_EVENT
 };

@@ -39,6 +39,9 @@
   --warning-bg: #fff4bf;
   --warning-border: #e3cd4b;
   --warning-text: #5e4a00;
+  --tooltip-bg: rgba(13, 23, 39, 0.96);
+  --tooltip-border: rgba(148, 163, 184, 0.28);
+  --tooltip-text: #f8fbff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -80,6 +83,9 @@
     --warning-bg: #3d3310;
     --warning-border: #826c1d;
     --warning-text: #f5df87;
+    --tooltip-bg: rgba(8, 15, 25, 0.98);
+    --tooltip-border: rgba(148, 163, 184, 0.34);
+    --tooltip-text: #f8fbff;
   }
 }
 
@@ -98,18 +104,205 @@ body {
 }
 
 .toolbar {
+  position: relative;
+  z-index: 30;
   display: grid;
-  grid-template-columns: auto auto auto auto auto auto auto auto minmax(240px, 1fr);
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px 18px;
+  align-items: end;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  isolation: isolate;
+}
+
+.toolbar-group {
+  position: relative;
+  z-index: 0;
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  align-content: start;
+}
+
+.toolbar-group:has([data-tooltip]:hover),
+.toolbar-group:has([data-tooltip]:focus-visible) {
+  z-index: 2;
+}
+
+.toolbar-group[hidden] {
+  display: none;
+}
+
+.toolbar-group-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+  user-select: none;
+}
+
+.toolbar-group-label::after {
+  content: "";
+  flex: 1 1 auto;
+  min-width: 28px;
+  height: 1px;
+  background: var(--border);
+}
+
+.toolbar-group-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.toolbar-group-filters .toolbar-group-controls {
+  width: 100%;
+}
+
+.toolbar-group-filters {
+  width: 100%;
+}
+
+.toolbar-group-filters .search-wrap {
+  flex: 1 1 auto;
+  min-width: 240px;
+}
+
+.toolbar [data-tooltip],
+.message-header-actions [data-tooltip] {
+  position: relative;
+}
+
+.toolbar [data-tooltip]:hover,
+.toolbar [data-tooltip]:focus-visible,
+.message-header-actions [data-tooltip]:hover,
+.message-header-actions [data-tooltip]:focus-visible {
+  z-index: 3;
+}
+
+.toolbar [data-tooltip]::before,
+.toolbar [data-tooltip]::after,
+.message-header-actions [data-tooltip]::before,
+.message-header-actions [data-tooltip]::after {
+  position: absolute;
+  left: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 0s linear 120ms;
+  z-index: 90;
+}
+
+.toolbar [data-tooltip]::before,
+.message-header-actions [data-tooltip]::before {
+  content: "";
+  top: calc(100% + 6px);
+  left: 14px;
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid var(--tooltip-border);
+  border-left: 1px solid var(--tooltip-border);
+  background: var(--tooltip-bg);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  transform: translateY(-4px) rotate(45deg);
+}
+
+.toolbar [data-tooltip]::after,
+.message-header-actions [data-tooltip]::after {
+  content: attr(data-tooltip);
+  top: calc(100% + 11px);
+  min-width: 168px;
+  max-width: min(260px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--tooltip-border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)) var(--tooltip-bg);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.2);
+  color: var(--tooltip-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+}
+
+.toolbar [data-tooltip][data-tooltip-position="end"]::before,
+.message-header-actions [data-tooltip][data-tooltip-position="end"]::before {
+  left: auto;
+  right: 14px;
+}
+
+.toolbar [data-tooltip][data-tooltip-position="end"]::after,
+.message-header-actions [data-tooltip][data-tooltip-position="end"]::after {
+  left: auto;
+  right: 0;
+}
+
+.toolbar [data-tooltip]:hover::before,
+.toolbar [data-tooltip]:focus-visible::before,
+.message-header-actions [data-tooltip]:hover::before,
+.message-header-actions [data-tooltip]:focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) rotate(45deg);
+  transition-delay: 70ms;
+}
+
+.toolbar [data-tooltip]:hover::after,
+.toolbar [data-tooltip]:focus-visible::after,
+.message-header-actions [data-tooltip]:hover::after,
+.message-header-actions [data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 70ms;
+}
+
+.toolbar [data-tooltip]:focus-visible::before,
+.message-header-actions [data-tooltip]:focus-visible::before {
+  transition-delay: 0s;
+}
+
+.toolbar [data-tooltip]:focus-visible::after,
+.message-header-actions [data-tooltip]:focus-visible::after {
+  transition-delay: 0s;
+}
+
+.toolbar [data-tooltip][aria-expanded="true"]::before,
+.toolbar [data-tooltip][aria-expanded="true"]::after,
+.message-header-actions [data-tooltip][aria-expanded="true"]::before,
+.message-header-actions [data-tooltip][aria-expanded="true"]::after {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.toolbar:has([data-tooltip]:focus-visible) [data-tooltip]:not(:focus-visible):hover::before,
+.toolbar:has([data-tooltip]:focus-visible) [data-tooltip]:not(:focus-visible):hover::after {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.message-header-actions:has([data-tooltip]:focus-visible) [data-tooltip]:not(:focus-visible):hover::before,
+.message-header-actions:has([data-tooltip]:focus-visible) [data-tooltip]:not(:focus-visible):hover::after {
+  opacity: 0;
+  visibility: hidden;
 }
 
 .toolbar input[type="search"],
 #openButton,
-#dateFilterButton {
+#dateFilterButton,
+#exportBookmarksButton {
   height: 40px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -224,23 +417,6 @@ body {
   opacity: 0.8;
 }
 
-.toolbar-icon-chip {
-  width: 26px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  color: var(--icon);
-}
-
-.toolbar-icon-chip[hidden] {
-  display: none;
-}
-
-.toolbar-icon-chip svg {
-  width: 16px;
-  height: 16px;
-}
-
 .date-filter-container {
   position: relative;
 }
@@ -272,11 +448,41 @@ body {
   transform: translateX(-1px);
 }
 
+.export-bookmarks-button svg {
+  width: 18px;
+  height: 18px;
+  transform: none;
+}
+
 #dateFilterButton:hover {
   background: var(--hover);
   border-color: var(--border-strong);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
+}
+
+.date-filter-button:disabled,
+.text-filter-button:disabled {
+  cursor: default;
+  transform: none;
+  box-shadow: none;
+  color: var(--muted);
+  background: var(--control-soft);
+  border-color: var(--border);
+}
+
+.date-filter-button:disabled:hover,
+.text-filter-button:disabled:hover {
+  background: var(--control-soft);
+  border-color: var(--border);
+  color: var(--muted);
+  transform: none;
+  box-shadow: none;
+}
+
+.date-filter-button:disabled svg,
+.text-filter-button:disabled svg {
+  opacity: 0.52;
 }
 
 #dateFilterButton.active {
@@ -329,6 +535,11 @@ body {
 .remote-content-button svg {
   width: 18px;
   height: 18px;
+}
+
+.bookmark-filter-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .text-filter-button:hover {
@@ -650,6 +861,13 @@ body {
   min-width: 0;
 }
 
+.mail-from-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
 .mail-from {
   margin: 0;
   font-size: 13px;
@@ -675,8 +893,46 @@ body {
 .mail-date-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+.mail-bookmark-button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.mail-bookmark-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.mail-bookmark-button:hover,
+.mail-bookmark-button:focus-visible {
+  background: var(--hover);
+  color: var(--accent);
+}
+
+.mail-bookmark-button.active {
+  color: var(--accent);
+}
+
+.mail-bookmark-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .mail-attachment-indicator {
@@ -1129,9 +1385,19 @@ body.resizing {
   white-space: nowrap;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .toolbar {
-    grid-template-columns: auto auto auto auto auto auto auto auto minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .toolbar-group-controls {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-group-filters .search-wrap {
+    width: 100%;
+    min-width: 0;
   }
 
   .layout {

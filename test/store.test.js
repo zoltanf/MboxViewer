@@ -8,7 +8,8 @@ const {
   loadMessageById,
   getAttachmentData,
   getMessageEmlBuffer,
-  getMessageSourcePreview
+  getMessageSourcePreview,
+  setMessageBookmarked
 } = require("../src/mboxStore");
 const os = require("os");
 const path = require("path");
@@ -51,8 +52,25 @@ test("mbox indexing, reuse, and on-demand attachment loading work", async () => 
     const page = searchMessages(workspace.dbPath, "", 10, 0);
     assert.equal(page.total, 2);
     assert.equal(page.messages[0].subject, "HTML with inline image");
+    assert.equal(page.messages[0].isBookmarked, false);
+
+    const bookmarked = setMessageBookmarked(workspace.dbPath, 2, true);
+    assert.deepEqual(bookmarked, { id: 2, isBookmarked: true });
+
+    const bookmarkedPage = searchMessages(workspace.dbPath, "", 10, 0, { bookmarkedOnly: true });
+    assert.equal(bookmarkedPage.total, 1);
+    assert.equal(bookmarkedPage.messages[0].id, 2);
+    assert.equal(bookmarkedPage.messages[0].isBookmarked, true);
+
+    const reusedAfterBookmark = await ensureMboxDatabase(workspace.sourcePath, sender, { dbPath: workspace.dbPath });
+    assert.equal(reusedAfterBookmark.reused, true);
+
+    const persistedBookmarkPage = searchMessages(workspace.dbPath, "", 10, 0, { bookmarkedOnly: true });
+    assert.equal(persistedBookmarkPage.total, 1);
+    assert.equal(persistedBookmarkPage.messages[0].id, 2);
 
     const message = await loadMessageById(workspace.dbPath, 2);
+    assert.equal(message.isBookmarked, true);
     assert.equal(message.attachments.length, 2);
     assert.equal(message.attachments[0].fileName, "hero.png");
     assert.ok(message.attachments[0].base64.length > 0);
