@@ -154,7 +154,7 @@ jobs:
           const repoRoot = process.cwd();
           const distDir = path.join(repoRoot, "dist");
           const outDir = path.join(repoRoot, "release-assets");
-          const releaseFilePattern = /\.(dmg|zip|exe|AppImage|deb|yml|blockmap)$/i;
+          const releaseFilePattern = /\.(dmg|zip|exe|AppImage|deb)$/i;
 
           if (!fs.existsSync(distDir)) {
             process.exit(0);
