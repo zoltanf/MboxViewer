@@ -66,8 +66,8 @@ jobs:
             prerelease="${{ inputs.prerelease }}"
           fi
 
-          bash scripts/set-base-version.sh "$base_version"
-          MBOX_VIEWER_BUILD_STAMP="$build_stamp" node scripts/set-build-version.js
+          bash ./set-base-version.sh "$base_version"
+          MBOX_VIEWER_BUILD_STAMP="$build_stamp" node ./set-build-version.js
           version="$(node -p "require('./package.json').version")"
           release_tag="v$version"
 
@@ -95,8 +95,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
-          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node scripts/set-build-version.js
+          bash ./set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
+          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node ./set-build-version.js
 
       - run: npm ci
       - run: npm test
@@ -131,8 +131,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
-          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node scripts/set-build-version.js
+          bash ./set-base-version.sh "${{ needs.prepare.outputs.base_version }}"
+          MBOX_VIEWER_BUILD_STAMP="${{ needs.prepare.outputs.build_stamp }}" node ./set-build-version.js
 
       - run: npm ci
 

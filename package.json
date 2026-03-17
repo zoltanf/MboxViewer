@@ -12,10 +12,10 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "test:perf": "node scripts/perf.js",
+    "test:perf": "node perf.js",
     "postinstall": "electron-builder install-app-deps",
-    "icons:generate": "node scripts/generate-icons.js",
-    "version:set:build": "node scripts/set-build-version.js",
+    "icons:generate": "node generate-icons.js",
+    "version:set:build": "node set-build-version.js",
     "prepare:build": "npm run version:set:build && npm run icons:generate",
     "prepack": "npm run prepare:build",
     "pack": "electron-builder --dir",
