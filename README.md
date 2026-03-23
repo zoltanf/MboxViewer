@@ -82,12 +82,17 @@ Note: `npm install` runs `electron-builder install-app-deps` to rebuild native m
 brew install --cask zoltanf/mboxviewer/mbox-viewer
 ```
 
-If macOS blocks the app on first launch because it is not notarized, open:
+If macOS blocks the app on first launch because it is not notarized, you can unblock it in one of two ways:
 
-- `System Settings`
-- `Privacy & Security`
+**Option A — Terminal (faster):**
 
-Then scroll to the bottom and click `Open Anyway` for `Mbox Viewer.app`.
+```bash
+sudo xattr -r -d com.apple.quarantine "/Applications/Mbox Viewer.app"
+```
+
+**Option B — System Settings:**
+
+Open `System Settings` → `Privacy & Security`, scroll to the bottom, and click `Open Anyway` for `Mbox Viewer.app`.
 
 ### Open `.mbox`, `.eml`, and `.pst` files directly from Finder or Explorer
 
