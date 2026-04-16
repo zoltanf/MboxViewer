@@ -1,5 +1,7 @@
 node_modules/
 dist/
+build/macos/
+build/homebrew-tap/
 
 *.sqlite
 *.sqlite-shm

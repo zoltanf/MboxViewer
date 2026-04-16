@@ -91,13 +91,15 @@
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         }
       ]
@@ -105,8 +107,20 @@
     "linux": {
       "icon": "build/icon.png",
       "target": [
-        "AppImage",
-        "deb"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "Office"
     }

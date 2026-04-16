@@ -171,18 +171,80 @@ Supported flows:
 - GitHub UI: run the `Release` workflow manually from the Actions tab
   - optional `base_version` input in `major.minor` format
   - builds macOS, Windows, and Linux artifacts
+  - builds `x64` and `arm64` for Windows and Linux
   - creates a GitHub Release and uploads the generated installers/archives
 - Tag push: push a tag in the format `v<major>.<minor>.<YYMMDDHHmm>`
   - example: `v1.6.2603172145`
   - the workflow uses that version directly and publishes the matching release automatically
+- Local workflow trigger script:
+
+```bash
+./scripts/trigger-release-workflow.sh 1.6
+```
+
+This dispatches the GitHub `Release` workflow on `main` with your base version and then watches the run logs.
 
 Notes:
 
 - the workflow reuses one shared build stamp across all runners so every platform artifact gets the same version number
+- the macOS job also generates Homebrew cask tarballs and `SHA256SUMS.txt`, then uploads them to the GitHub Release
+- Windows and Linux builds are now matrixed by architecture (`x64` + `arm64`) on GitHub-hosted runners
+- the Homebrew tap update is still a separate manual step after each GitHub release run
 - unsigned builds work with the default GitHub token
 - if you later want signing or notarization, you can add the relevant platform secrets to the workflow
 
 For a short step-by-step guide, see [RELEASING.md](/Users/zoltanf/Development/MboxViewer/RELEASING.md).
+
+After a GitHub release finishes, run:
+
+```bash
+./scripts/publish-homebrew-tap-from-release.sh v1.6.2604160534
+```
+
+This fetches the DMG + SHA directly from the GitHub Release and updates `zoltanf/homebrew-mboxviewer`.
+
+Optional architecture override:
+
+```bash
+./scripts/publish-homebrew-tap-from-release.sh v1.6.2604160534 x64
+```
+
+## Homebrew Release Maintenance
+
+The repo also includes a single-command local macOS flow for Homebrew release assets and tap updates:
+
+```bash
+./scripts/build-macos-and-publish.sh 1.6
+```
+
+This wrapper script does all steps in order:
+
+- runs `build-macos.sh` to build macOS artifacts and create Homebrew cask tarballs
+- runs `publish-github-release.sh` to upload DMG/ZIP/Homebrew assets to `v<version>`
+- runs `publish-homebrew-tap.sh` to render and push the Homebrew tap update
+
+If you prefer manual control, you can still run the individual scripts:
+
+```bash
+./scripts/build-macos.sh
+./scripts/publish-github-release.sh
+./scripts/publish-homebrew-tap.sh
+```
+
+What these scripts do:
+
+- `build-macos.sh` runs the Electron macOS build, creates Homebrew cask tarballs from the built `.app` bundles, and writes metadata to `build/macos/`
+- `publish-github-release.sh` uploads the macOS installers plus Homebrew tarballs to `v<version>`
+- `publish-homebrew-tap.sh` renders and pushes the cask to the Homebrew tap repo
+- `publish-homebrew-tap-from-release.sh` updates the tap directly from an existing GitHub release tag (no local artifacts env file needed)
+
+By default the tap repo is `zoltanf/homebrew-mboxviewer`, which maps to:
+
+```bash
+brew install --cask zoltanf/mboxviewer/mbox-viewer
+```
+
+If you need a different tap repo, set `MBOX_VIEWER_TAP_REPO` before running the publisher.
 
 ## Repository Structure (high level)
 
