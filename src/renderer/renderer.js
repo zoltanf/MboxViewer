@@ -1,4 +1,5 @@
 const openButton = document.getElementById("openButton");
+const welcomeOpenButton = document.getElementById("welcomeOpenButton");
 const exportBookmarksButton = document.getElementById("exportBookmarksButton");
 const remoteContentButton = document.getElementById("remoteContentButton");
 const searchInput = document.getElementById("searchInput");
@@ -93,6 +94,9 @@ let pendingExternalUrl = "";
 let pendingOpenTiming = null;
 
 openButton.addEventListener("click", openMbox);
+if (welcomeOpenButton) {
+  welcomeOpenButton.addEventListener("click", openMbox);
+}
 if (exportBookmarksButton) {
   exportBookmarksButton.addEventListener("click", exportBookmarkedMessages);
 }
@@ -217,6 +221,7 @@ setSearchVisible(false);
 setTextFiltersVisible(false);
 setExportBookmarksVisible(false);
 setRemoteContentVisible(false);
+setWelcomeVisible(true);
 publishToolbarMenuState();
 void consumePendingMailboxOpen();
 
@@ -289,6 +294,7 @@ async function openMailboxRequest(loader) {
     configureDateFilter(result?.dateRange || null);
 
     applyPageResult(result);
+    setWelcomeVisible(false);
     await refreshBookmarkedExportState();
     setOpenProgress({ visible: true, indeterminate: false, value: 100 });
     setStatusMessage(`Loaded ${totalMessages} email${totalMessages === 1 ? "" : "s"} from ${mboxPath}`);
@@ -299,6 +305,7 @@ async function openMailboxRequest(loader) {
     }
   } catch (error) {
     setStatusMessage("Failed to open file.");
+    setWelcomeVisible(!dbPath && !currentStandaloneMessage);
     setOpenProgress({ visible: false });
     console.error(error);
   } finally {
@@ -2893,10 +2900,21 @@ function setOpenProgress({ visible, indeterminate = false, value = 0 }) {
 }
 
 function setOpenButtonBusy(isBusy) {
-  if (!openButton) {
+  if (openButton) {
+    openButton.disabled = Boolean(isBusy);
+  }
+  if (welcomeOpenButton) {
+    welcomeOpenButton.disabled = Boolean(isBusy);
+  }
+}
+
+function setWelcomeVisible(visible) {
+  if (!layout) {
     return;
   }
-  openButton.disabled = Boolean(isBusy);
+  const shouldShow = Boolean(visible);
+  layout.classList.toggle("welcome-active", shouldShow);
+  document.body.classList.toggle("welcome-active", shouldShow);
 }
 
 function refreshStatusMeta() {

@@ -116,6 +116,10 @@ body {
   isolation: isolate;
 }
 
+body.welcome-active .toolbar {
+  display: none;
+}
+
 .toolbar-group {
   position: relative;
   z-index: 0;
@@ -778,6 +782,200 @@ body {
   display: grid;
   grid-template-columns: minmax(260px, var(--left-pane-width)) var(--splitter-width) minmax(0, 1fr);
   overflow: hidden;
+}
+
+.welcome-screen {
+  display: none;
+}
+
+.layout.welcome-active {
+  grid-template-columns: 1fr;
+  place-items: center;
+  padding: clamp(24px, 5vw, 56px);
+  background:
+    linear-gradient(135deg, rgba(31, 111, 235, 0.1), transparent 40%),
+    linear-gradient(315deg, rgba(11, 128, 88, 0.12), transparent 42%),
+    var(--panel-subtle);
+}
+
+.layout.welcome-active .welcome-screen {
+  width: min(980px, 100%);
+  min-height: min(560px, 100%);
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.75fr);
+  gap: clamp(28px, 6vw, 72px);
+  align-items: center;
+}
+
+.layout.welcome-active .mail-list-panel,
+.layout.welcome-active .splitter,
+.layout.welcome-active .message-panel {
+  display: none;
+}
+
+.welcome-copy {
+  min-width: 0;
+}
+
+.welcome-kicker {
+  width: fit-content;
+  margin: 0 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: var(--panel);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.welcome-copy h1 {
+  max-width: 680px;
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 64px;
+  line-height: 0.94;
+  letter-spacing: 0;
+}
+
+.welcome-intro {
+  max-width: 590px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.55;
+}
+
+.welcome-open-button {
+  margin-top: 34px;
+  min-height: 64px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: var(--shadow-accent);
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.welcome-open-button svg {
+  width: 26px;
+  height: 26px;
+}
+
+.welcome-open-button:hover {
+  background: var(--accent-strong);
+}
+
+.welcome-open-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+  box-shadow: none;
+}
+
+.welcome-open-button:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 4px var(--focus-ring),
+    var(--shadow-accent);
+}
+
+.welcome-formats {
+  margin: 14px 0 0;
+  color: var(--muted-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.welcome-visual {
+  position: relative;
+  min-height: 360px;
+}
+
+.welcome-envelope {
+  position: absolute;
+  inset: auto 0 34px auto;
+  width: min(360px, 100%);
+  aspect-ratio: 1.42;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+
+.welcome-envelope::before,
+.welcome-envelope::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.welcome-envelope::before {
+  clip-path: polygon(0 0, 50% 54%, 100% 0);
+  background: rgba(31, 111, 235, 0.14);
+}
+
+.welcome-envelope::after {
+  clip-path: polygon(0 100%, 50% 44%, 100% 100%);
+  background: rgba(245, 158, 11, 0.2);
+}
+
+.welcome-envelope-back {
+  right: 34px;
+  bottom: 104px;
+  background: var(--control-soft);
+  transform: rotate(-7deg);
+}
+
+.welcome-envelope-front {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 38px 36px;
+  background: var(--panel);
+}
+
+.welcome-envelope-front span {
+  display: block;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--control-chip);
+}
+
+.welcome-envelope-front span:nth-child(1) {
+  width: 72%;
+  background: var(--accent-active-border);
+}
+
+.welcome-envelope-front span:nth-child(2) {
+  width: 88%;
+}
+
+.welcome-envelope-front span:nth-child(3) {
+  width: 54%;
+  background: rgba(11, 128, 88, 0.32);
+}
+
+.welcome-badge {
+  position: absolute;
+  right: min(16px, 4vw);
+  bottom: 56px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--panel-elevated);
+  box-shadow: var(--shadow-sm);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .mail-list-panel {
@@ -1524,6 +1722,40 @@ body.resizing {
   .layout {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(220px, 40%) 1fr;
+  }
+
+  .layout.welcome-active {
+    grid-template-rows: 1fr;
+    align-items: start;
+    padding: 24px;
+  }
+
+  .layout.welcome-active .welcome-screen {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 26px;
+  }
+
+  .welcome-copy h1 {
+    font-size: 44px;
+    line-height: 1;
+  }
+
+  .welcome-intro {
+    font-size: 16px;
+  }
+
+  .welcome-open-button {
+    width: 100%;
+    min-height: 58px;
+  }
+
+  .welcome-visual {
+    min-height: 220px;
+  }
+
+  .welcome-envelope {
+    width: min(300px, 88%);
   }
 
   .splitter {
