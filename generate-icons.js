@@ -59,6 +59,11 @@ function generateBasePng() {
     return;
   }
 
+  if (process.platform === "win32" && hasAllPrebuiltIcons()) {
+    console.warn("Using prebuilt icons from build/ because rsvg-convert is unavailable on Windows.");
+    return;
+  }
+
   if (hasCommand("magick")) {
     run("magick", ["-background", "none", svgPath, "-resize", "1024x1024", basePng]);
     return;
