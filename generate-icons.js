@@ -103,6 +103,11 @@ function assertOutputs() {
 }
 
 function main() {
+  if (process.platform === "win32" && !hasCommand("rsvg-convert") && hasAllPrebuiltIcons()) {
+    console.warn("Using prebuilt icons from build/ because rsvg-convert is unavailable on Windows.");
+    return;
+  }
+
   if (!canGenerateBasePng() || !canResizePngs() || !canGenerateIco()) {
     if (hasAllPrebuiltIcons()) {
       console.warn("Using prebuilt icons from build/ because SVG rasterizer tools are unavailable.");
