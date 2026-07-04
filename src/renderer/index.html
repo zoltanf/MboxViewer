@@ -272,6 +272,23 @@
           <div class="welcome-badge">200/page</div>
         </div>
       </section>
+      <section id="openingScreen" class="opening-screen" aria-labelledby="openingTitle" aria-live="polite">
+        <div class="opening-visual" aria-hidden="true">
+          <div class="opening-ring"></div>
+          <div class="opening-mail-stack">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
+        <div class="opening-copy">
+          <p class="opening-kicker">Working on it</p>
+          <h1 id="openingTitle">Opening your mailbox...</h1>
+          <p id="openingStatus" class="opening-status">
+            Preparing the archive for browsing. Large files can take a little while.
+          </p>
+        </div>
+      </section>
       <section class="mail-list-panel">
         <ul id="mailList" class="mail-list"></ul>
       </section>
@@ -311,9 +328,12 @@
             <h3 id="emlSourceTitle">Original EML Source</h3>
             <p class="eml-source-copy">Plain-text view of the raw message source.</p>
           </div>
-          <button id="emlSourceClose" class="eml-source-close" type="button" aria-label="Close EML source preview">
-            &times;
-          </button>
+          <div class="eml-source-actions">
+            <button id="emlSourceCopy" class="eml-source-copy-button" type="button">Copy Source</button>
+            <button id="emlSourceClose" class="eml-source-close" type="button" aria-label="Close EML source preview">
+              &times;
+            </button>
+          </div>
         </div>
         <pre id="emlSourceContent" class="eml-source-content"></pre>
       </section>

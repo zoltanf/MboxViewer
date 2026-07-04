@@ -37,6 +37,7 @@ const dateFromRange = document.getElementById("dateFromRange");
 const dateToRange = document.getElementById("dateToRange");
 const statusMessage = document.getElementById("statusMessage");
 const statusMeta = document.getElementById("statusMeta");
+const openingStatus = document.getElementById("openingStatus");
 const openProgress = document.getElementById("openProgress");
 const openProgressBar = document.getElementById("openProgressBar");
 const mailListPanel = document.querySelector(".mail-list-panel");
@@ -48,6 +49,7 @@ const externalLinkCancel = document.getElementById("externalLinkCancel");
 const externalLinkCopy = document.getElementById("externalLinkCopy");
 const externalLinkOpen = document.getElementById("externalLinkOpen");
 const emlSourceModal = document.getElementById("emlSourceModal");
+const emlSourceCopy = document.getElementById("emlSourceCopy");
 const emlSourceClose = document.getElementById("emlSourceClose");
 const emlSourceContent = document.getElementById("emlSourceContent");
 const shortcutsModal = document.getElementById("shortcutsModal");
@@ -174,6 +176,9 @@ if (externalLinkOpen) {
 if (emlSourceModal) {
   emlSourceModal.addEventListener("click", handleEmlSourceModalClick);
 }
+if (emlSourceCopy) {
+  emlSourceCopy.addEventListener("click", copyEmlSourceToClipboard);
+}
 if (emlSourceClose) {
   emlSourceClose.addEventListener("click", () => setEmlSourceModalOpen(false));
 }
@@ -251,6 +256,10 @@ async function consumePendingMailboxOpen() {
 }
 
 async function openMailboxRequest(loader) {
+  if (openingInProgress) {
+    return;
+  }
+
   requestToken += 1;
   messageRequestToken += 1;
   pendingOpenTiming = null;
@@ -259,6 +268,8 @@ async function openMailboxRequest(loader) {
     searchDebounceTimer = null;
   }
   openingInProgress = true;
+  setWelcomeVisible(false);
+  setOpeningVisible(true);
   setOpenButtonBusy(true);
   setOpenProgress({ visible: true, indeterminate: true, value: 8 });
   setStatusMessage("Opening file...");
@@ -267,6 +278,8 @@ async function openMailboxRequest(loader) {
     const result = await loader();
     if (!result || result.canceled) {
       setStatusMessage(result?.error || "Open cancelled.");
+      setOpeningVisible(false);
+      setWelcomeVisible(!dbPath && !currentStandaloneMessage);
       setOpenProgress({ visible: false });
       return;
     }
@@ -295,6 +308,7 @@ async function openMailboxRequest(loader) {
 
     applyPageResult(result);
     setWelcomeVisible(false);
+    setOpeningVisible(false);
     await refreshBookmarkedExportState();
     setOpenProgress({ visible: true, indeterminate: false, value: 100 });
     setStatusMessage(`Loaded ${totalMessages} email${totalMessages === 1 ? "" : "s"} from ${mboxPath}`);
@@ -305,6 +319,7 @@ async function openMailboxRequest(loader) {
     }
   } catch (error) {
     setStatusMessage("Failed to open file.");
+    setOpeningVisible(false);
     setWelcomeVisible(!dbPath && !currentStandaloneMessage);
     setOpenProgress({ visible: false });
     console.error(error);
@@ -499,6 +514,10 @@ async function exportBookmarkedMessages() {
 
 function handleAppMenuCommand(command) {
   const value = String(command || "");
+  if (openingInProgress) {
+    return;
+  }
+
   if (value === "open-mailbox") {
     void openMbox();
     return;
@@ -707,6 +726,9 @@ function handleGlobalKeyDown(event) {
   }
 
   if (externalLinkModalOpen || emlSourceModalOpen || shortcutsModalOpen || event.defaultPrevented) {
+    return;
+  }
+  if (openingInProgress) {
     return;
   }
   if (event.metaKey || event.ctrlKey || event.altKey) {
@@ -1088,6 +1110,33 @@ async function copyPendingExternalLink() {
   } catch (error) {
     setStatusMessage("Could not copy link to clipboard.");
     console.error(error);
+  }
+}
+
+async function copyEmlSourceToClipboard() {
+  const sourceText = emlSourceContent ? emlSourceContent.textContent || "" : "";
+  if (!sourceText) {
+    setStatusMessage("No source content to copy.");
+    return;
+  }
+
+  if (emlSourceCopy) {
+    emlSourceCopy.disabled = true;
+  }
+  try {
+    const result = await window.mboxApi.copyToClipboard({ text: sourceText });
+    if (!result || !result.copied) {
+      setStatusMessage("Could not copy source to clipboard.");
+      return;
+    }
+    setStatusMessage("Source copied to clipboard.");
+  } catch (error) {
+    setStatusMessage("Could not copy source to clipboard.");
+    console.error(error);
+  } finally {
+    if (emlSourceCopy) {
+      emlSourceCopy.disabled = false;
+    }
   }
 }
 
@@ -2869,6 +2918,9 @@ function fitMessageFrameToContent(frame) {
 
 function setStatusMessage(value) {
   statusMessage.textContent = value;
+  if (openingStatus && openingInProgress) {
+    openingStatus.textContent = value;
+  }
   refreshStatusMeta();
 }
 
@@ -2915,6 +2967,18 @@ function setWelcomeVisible(visible) {
   const shouldShow = Boolean(visible);
   layout.classList.toggle("welcome-active", shouldShow);
   document.body.classList.toggle("welcome-active", shouldShow);
+}
+
+function setOpeningVisible(visible) {
+  if (!layout) {
+    return;
+  }
+  const shouldShow = Boolean(visible);
+  layout.classList.toggle("opening-active", shouldShow);
+  document.body.classList.toggle("opening-active", shouldShow);
+  if (openingStatus && shouldShow) {
+    openingStatus.textContent = "Preparing the archive for browsing. Large files can take a little while.";
+  }
 }
 
 function refreshStatusMeta() {

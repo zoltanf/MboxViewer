@@ -116,7 +116,8 @@ body {
   isolation: isolate;
 }
 
-body.welcome-active .toolbar {
+body.welcome-active .toolbar,
+body.opening-active .toolbar {
   display: none;
 }
 
@@ -784,17 +785,26 @@ body.welcome-active .toolbar {
   overflow: hidden;
 }
 
-.welcome-screen {
+.welcome-screen,
+.opening-screen {
   display: none;
 }
 
-.layout.welcome-active {
+.layout.welcome-active,
+.layout.opening-active {
   grid-template-columns: 1fr;
   place-items: center;
   padding: clamp(24px, 5vw, 56px);
   background:
     linear-gradient(135deg, rgba(31, 111, 235, 0.1), transparent 40%),
     linear-gradient(315deg, rgba(11, 128, 88, 0.12), transparent 42%),
+    var(--panel-subtle);
+}
+
+.layout.opening-active {
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.12), transparent 38%),
+    linear-gradient(315deg, rgba(31, 111, 235, 0.1), transparent 42%),
     var(--panel-subtle);
 }
 
@@ -807,10 +817,136 @@ body.welcome-active .toolbar {
   align-items: center;
 }
 
+.layout.opening-active .opening-screen {
+  width: min(780px, 100%);
+  min-height: min(520px, 100%);
+  display: grid;
+  place-items: center;
+  gap: 30px;
+  text-align: center;
+}
+
 .layout.welcome-active .mail-list-panel,
 .layout.welcome-active .splitter,
-.layout.welcome-active .message-panel {
+.layout.welcome-active .message-panel,
+.layout.opening-active .welcome-screen,
+.layout.opening-active .mail-list-panel,
+.layout.opening-active .splitter,
+.layout.opening-active .message-panel {
   display: none;
+}
+
+.opening-visual {
+  position: relative;
+  width: 176px;
+  height: 176px;
+  display: grid;
+  place-items: center;
+}
+
+.opening-ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background:
+    conic-gradient(from 0deg, rgba(31, 111, 235, 0), rgba(31, 111, 235, 0.9), rgba(245, 158, 11, 0.85), rgba(31, 111, 235, 0)),
+    var(--panel);
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%);
+  mask: radial-gradient(circle, transparent 58%, #000 59%);
+  animation: opening-spin 1.6s linear infinite;
+}
+
+.opening-mail-stack {
+  position: relative;
+  width: 116px;
+  height: 88px;
+}
+
+.opening-mail-stack span {
+  position: absolute;
+  left: 0;
+  width: 116px;
+  height: 72px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.opening-mail-stack span::before,
+.opening-mail-stack span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.opening-mail-stack span::before {
+  clip-path: polygon(0 0, 50% 52%, 100% 0);
+  background: rgba(31, 111, 235, 0.16);
+}
+
+.opening-mail-stack span::after {
+  clip-path: polygon(0 100%, 50% 42%, 100% 100%);
+  background: rgba(11, 128, 88, 0.18);
+}
+
+.opening-mail-stack span:nth-child(1) {
+  top: 16px;
+  transform: rotate(-8deg);
+  background: var(--control-soft);
+}
+
+.opening-mail-stack span:nth-child(2) {
+  top: 8px;
+  transform: rotate(5deg);
+  background: var(--panel-elevated);
+}
+
+.opening-mail-stack span:nth-child(3) {
+  top: 0;
+}
+
+.opening-copy {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+}
+
+.opening-kicker {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: var(--panel);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.opening-copy h1 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 44px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.opening-status {
+  max-width: 560px;
+  min-height: 52px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+@keyframes opening-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .welcome-copy {
@@ -1538,6 +1674,30 @@ body.resizing {
   font-size: 13px;
 }
 
+.eml-source-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.eml-source-copy-button {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 13px;
+  background: var(--control-soft);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.eml-source-copy-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .eml-source-close {
   width: 34px;
   height: 34px;
@@ -1724,7 +1884,8 @@ body.resizing {
     grid-template-rows: minmax(220px, 40%) 1fr;
   }
 
-  .layout.welcome-active {
+  .layout.welcome-active,
+  .layout.opening-active {
     grid-template-rows: 1fr;
     align-items: start;
     padding: 24px;
@@ -1734,6 +1895,35 @@ body.resizing {
     min-height: 0;
     grid-template-columns: 1fr;
     gap: 26px;
+  }
+
+  .layout.opening-active .opening-screen {
+    min-height: 0;
+    gap: 24px;
+  }
+
+  .opening-visual {
+    width: 138px;
+    height: 138px;
+  }
+
+  .opening-mail-stack {
+    width: 92px;
+    height: 72px;
+  }
+
+  .opening-mail-stack span {
+    width: 92px;
+    height: 58px;
+  }
+
+  .opening-copy h1 {
+    font-size: 34px;
+  }
+
+  .opening-status {
+    min-height: 74px;
+    font-size: 15px;
   }
 
   .welcome-copy h1 {
